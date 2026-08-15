@@ -17,7 +17,7 @@ if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
 # قائمة أرقام هواتف المشرفين (بدون الصفر)
-ADMIN_IDS = [501234567, 509876543]  # استبدل بأرقامك
+ADMIN_IDS = [5387087412, 509876543]  # استبدل بأرقامك
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -73,9 +73,13 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
     await update.message.reply_text("مرحباً أيها المشرف!", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- 4. تشغيل البوت ---
+# --- 4. تشغيل البوت (تم الإصلاح) ---
 def run_bot():
-    """تشغيل البوت في حلقة (Polling)"""
+    """تشغيل البوت في حلقة (Polling) مع حلقة أحداث خاصة"""
+    # إنشاء حلقة أحداث جديدة لهذا الخيط (الإصلاح)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(ask_button, pattern="ask"))
