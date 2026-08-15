@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة استفسارات المقرأة</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; padding: 15px; background: #f4f7fa; }
+        .container { max-width: 600px; margin: auto; }
+        .card { background: white; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-right: 5px solid #f39c12; }
+        .card.answered { border-right-color: #27ae60; }
+        h1 { color: #2c3e50; font-size: 22px; text-align: center; }
+        .user { font-weight: bold; color: #2980b9; }
+        .question { margin: 10px 0; background: #ecf0f1; padding: 10px; border-radius: 8px; }
+        textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; margin: 5px 0; }
+        button { background: #0088cc; color: white; border: none; padding: 10px 20px; border-radius: 8px; width: 100%; font-size: 16px; }
+        .pending-badge { background: #f39c12; color: white; padding: 2px 10px; border-radius: 20px; font-size: 12px; }
+        .answered-badge { background: #27ae60; color: white; padding: 2px 10px; border-radius: 20px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📋 لوحة الاستفسارات</h1>
+        <p style="text-align:center; color:#7f8c8d;">مرحباً أيها المشرف! هذه قائمة الاستفسارات.</p>
+        
+        <!-- نموذج استفسار معلق (Pending) -->
+        <div class="card">
+            <span class="pending-badge">في الانتظار</span>
+            <div class="user">👤 أحمد محمد</div>
+            <div class="question">"كيف يمكنني حفظ الجزء الثلاثين بسهولة؟"</div>
+            <textarea placeholder="اكتب ردك هنا..."></textarea>
+            <button>📤 إرسال الرد</button>
+        </div>
+
+        <!-- نموذج استفسار تم الرد عليه (Answered) -->
+        <div class="card answered">
+            <span class="answered-badge">تم الرد ✅</span>
+            <div class="user">👤 سارة خالد</div>
+            <div class="question">"متى موعد الاختبار القادم؟"</div>
+            <div style="background:#d5f5e3; padding:10px; border-radius:8px; color:#1e8449;">
+                <strong>الرد:</strong> يوم الأحد القادم الساعة 8 مساءً.
+            </div>
+        </div>
+        
+        <p style="text-align:center; color:#95a5a6; font-size:14px; margin-top:30px;">هذا نموذج أولي، سيتم ربطه بقاعدة البيانات لاحقاً 🚀</p>
+    </div>
+</body>
+</html>
