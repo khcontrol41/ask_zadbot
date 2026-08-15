@@ -16,8 +16,8 @@ if not TOKEN:
 if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
-# قائمة أرقام هواتف المشرفين (بدون الصفر)
-ADMIN_IDS = [5387087412, 509876543]  # استبدل بأرقامك
+# ⚠️ IMPORTANT: استبدل هذه الأرقام بأرقام المشرفين الحقيقية (بدون الصفر)
+ADMIN_IDS = [5387087412‪]  # ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -69,14 +69,14 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
-    mini_app_url = "https://your-username.github.io/makraa-admin/"  # غيّره لاحقاً
+    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin41/"  # ⚠️ غيّر هذا الرابط
     keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
     await update.message.reply_text("مرحباً أيها المشرف!", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- 4. تشغيل البوت (تم الإصلاح) ---
+# --- 4. تشغيل البوت (تم الإصلاح النهائي) ---
 def run_bot():
     """تشغيل البوت في حلقة (Polling) مع حلقة أحداث خاصة"""
-    # إنشاء حلقة أحداث جديدة لهذا الخيط (الإصلاح)
+    # إنشاء حلقة أحداث جديدة لهذا الخيط
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -87,7 +87,8 @@ def run_bot():
     bot_app.add_handler(CommandHandler("admin", admin_panel))
     
     print("✅ البوت يعمل...")
-    bot_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # 🔧 الإصلاح: تجاهل إشارات النظام (stop_signals=None) لتجنب خطأ set_wakeup_fd
+    bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
 
 # --- 5. تشغيل Flask مع البوت في خلفية ---
 if __name__ == "__main__":
