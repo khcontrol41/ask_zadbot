@@ -24,9 +24,9 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # --- 2. تهيئة Flask مع دعم CORS ---
 app = Flask(__name__)
-CORS(app)  # يسمح للواجهة (GitHub Pages) بالاتصال بالخادم
+CORS(app)
 
-# متغير عام لحمل كائن البوت لإرسال الردود
+# متغير عام لحمل كائن البوت
 bot_app = None
 
 @app.route('/')
@@ -37,11 +37,10 @@ def home():
 def health():
     return "OK"
 
-# --- نقاط النهاية الجديدة للواجهة (API) ---
+# --- نقاط النهاية للواجهة (API) ---
 
 @app.route('/get_questions', methods=['POST'])
 def get_questions():
-    """ترجع قائمة الاستفسارات من قاعدة البيانات"""
     try:
         data = request.get_json()
         user_id = data.get('user_id')
@@ -49,10 +48,12 @@ def get_questions():
         if user_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
-        # دالة غير متزامنة لجلب البيانات
         async def fetch_questions():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
+                # ✅ إصلاح الخطأ: إضافة عمود reply إذا لم يكن موجوداً
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
+                
                 rows = await conn.fetch("""
                     SELECT id, user_id, username, question, status, reply, created_at 
                     FROM questions 
@@ -62,13 +63,11 @@ def get_questions():
             finally:
                 await conn.close()
         
-        # تشغيل الدالة غير المتزامنة في حلقة جديدة
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         questions = loop.run_until_complete(fetch_questions())
         loop.close()
         
-        # تحويل التواريخ إلى نص
         for q in questions:
             q['created_at'] = q['created_at'].isoformat() if q['created_at'] else None
             
@@ -80,7 +79,6 @@ def get_questions():
 
 @app.route('/reply', methods=['POST'])
 def reply_question():
-    """استقبال رد المشرف وإرساله للطالب وتحديث قاعدة البيانات"""
     try:
         data = request.get_json()
         question_id = data.get('question_id')
@@ -93,34 +91,23 @@ def reply_question():
         if not question_id or not reply_text:
             return jsonify({"error": "بيانات ناقصة"}), 400
             
-        # دالة غير متزامنة للتعامل مع قاعدة البيانات وإرسال الرد
         async def update_and_send():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # 1. الحصول على user_id الخاص بالطالب
+                # ✅ إصلاح إضافي: التأكد من وجود العمود قبل التحديث
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
+                
                 row = await conn.fetchrow("SELECT user_id FROM questions WHERE id = $1", question_id)
                 if not row:
                     return {"error": "السؤال غير موجود"}
                 
                 student_id = row['user_id']
                 
-                # 2. التأكد من وجود عمود reply
-                await conn.execute("""
-                    DO $$ 
-                    BEGIN 
-                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='questions' AND column_name='reply') THEN
-                            ALTER TABLE questions ADD COLUMN reply TEXT;
-                        END IF;
-                    END $$;
-                """)
-                
-                # 3. تحديث السؤال
                 await conn.execute(
                     "UPDATE questions SET reply = $1, status = 'answered' WHERE id = $2",
                     reply_text, question_id
                 )
                 
-                # 4. إرسال الرد للطالب عبر البوت
                 global bot_app
                 if bot_app:
                     await bot_app.bot.send_message(
@@ -137,7 +124,6 @@ def reply_question():
             finally:
                 await conn.close()
         
-        # تشغيل الدالة غير المتزامنة في حلقة جديدة
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(update_and_send())
@@ -175,7 +161,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         try:
-            # إنشاء الجدول مع عمود reply
+            # ✅ إضافة عمود reply أثناء إنشاء الجدول لمنع المشكلة مستقبلاً
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS questions (
                     id SERIAL PRIMARY KEY, 
