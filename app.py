@@ -17,7 +17,7 @@ if not TOKEN:
 if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
-ADMIN_IDS = [5387087412]  # ضع رقمك هنا
+ADMIN_IDS = [5387087412‪]  # ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -40,7 +40,6 @@ def health():
     return "OK"
 
 # --- نقاط النهاية للواجهة (API) ---
-
 @app.route('/get_questions', methods=['POST'])
 def get_questions():
     try:
@@ -131,7 +130,6 @@ def reply_question():
         logging.error(f"خطأ في الرد: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- نقطة نهاية جديدة لحذف الاستفسارات التي تم الرد عليها ---
 @app.route('/delete_answered', methods=['POST'])
 def delete_answered():
     try:
@@ -144,9 +142,7 @@ def delete_answered():
         async def delete_answered_async():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # حذف جميع الاستفسارات التي حالتها 'answered' (تم الرد عليها)
                 result = await conn.execute("DELETE FROM questions WHERE status = 'answered'")
-                # نتيجة الحذف تأتي بصيغة مثل "DELETE 5"
                 import re
                 match = re.search(r'DELETE (\d+)', result)
                 count = int(match.group(1)) if match else 0
@@ -162,22 +158,28 @@ def delete_answered():
         return jsonify({"error": str(e)}), 500
 
 # --- 4. دوال البوت الأساسية ---
+# زر "إرسال استفسار" ثابت سنستخدمه في عدة أماكن
+ASK_BUTTON = [[InlineKeyboardButton("📩 إرسال استفسار", callback_data="ask")]]
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("📩 إرسال استفسار", callback_data="ask")]]
+    """رسالة الترحيب مع زر ثابت"""
     await update.message.reply_text(
         "مرحباً بك في بوت استفسارات المقرأة! 📚\nاضغط على الزر أدناه لإرسال استفسارك.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(ASK_BUTTON)
     )
 
 async def ask_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عند الضغط على زر إرسال استفسار (نرسل رسالة جديدة ولا نعدل القديمة)"""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("✍️ من فضلك اكتب استفسارك كرسالة نصية الآن.")
+    # نرسل رسالة جديدة تطلب الكتابة، بدلاً من تعديل رسالة الترحيب
+    await query.message.reply_text("✍️ من فضلك اكتب استفسارك كرسالة نصية الآن.")
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استقبال النص وحفظه، ثم إعادة الزر للاستفسارات الجديدة"""
     user_id = update.effective_user.id
     username = update.effective_user.username or "مجهول"
     question_text = update.message.text
@@ -202,12 +204,24 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             await conn.close()
             
-        await update.message.reply_text("✅ تم استلام استفسارك بنجاح! سيتم الرد عليه قريبًا.")
+        # ✅ إرسال رسالة تأكيد مع إعادة الزر (ليتمكن من إرسال استفسار آخر)
+        await update.message.reply_text(
+            "✅ تم استلام استفسارك بنجاح! سيتم الرد عليه قريبًا.\nيمكنك إرسال استفسار آخر بالضغط على الزر أدناه.",
+            reply_markup=InlineKeyboardMarkup(ASK_BUTTON)
+        )
     except Exception as e:
         logging.error(f"خطأ في حفظ السؤال: {e}")
         await update.message.reply_text("❌ حدث خطأ تقني، حاول مرة أخرى لاحقًا.")
 
+async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """منع إرسال المرفقات (صور، صوت، فيديو، مستندات، إلخ)"""
+    await update.message.reply_text(
+        "❌ عذراً، هذا البوت يقبل النصوص الكتابية فقط.\n"
+        "يرجى كتابة استفسارك كنص عادي."
+    )
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """فتح لوحة المشرفين"""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
@@ -226,7 +240,10 @@ def run_bot():
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(ask_button, pattern="ask"))
+    # معالج النصوص (الاستفسارات)
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
+    # معالج المرفقات (كل ما ليس نصاً)
+    bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
     
     print("✅ البوت يعمل...")
