@@ -213,7 +213,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
     # ⚠️ IMPORTANT: استبدل هذا الرابط برابط GitHub Pages الخاص بك
-    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin41/"
+    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"
     keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
     await update.message.reply_text("مرحباً أيها المشرف!", reply_markup=InlineKeyboardMarkup(keyboard))
 
