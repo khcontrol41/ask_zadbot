@@ -3,7 +3,7 @@ import logging
 import asyncio
 import threading
 from flask import Flask, request, jsonify
-from flask_cors import CORS  # مكتبة جديدة للسماح بالاتصال
+from flask_cors import CORS
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import asyncpg
@@ -24,7 +24,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # --- 2. تهيئة Flask مع دعم CORS ---
 app = Flask(__name__)
-CORS(app)  # هذا السطر يسمح للواجهة (GitHub Pages) بالاتصال بالخادم
+CORS(app)  # يسمح للواجهة (GitHub Pages) بالاتصال بالخادم
 
 # متغير عام لحمل كائن البوت لإرسال الردود
 bot_app = None
@@ -46,19 +46,27 @@ def get_questions():
         data = request.get_json()
         user_id = data.get('user_id')
         
-        # التحقق من صلاحية المشرف
         if user_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
-        # الاتصال بقاعدة البيانات وجلب الاستفسارات
-        conn = asyncpg.connect(DATABASE_URL)
-        # تنفيذ استعلامين (select) بشكل متزامن (نستخدم asyncio.run)
+        # دالة غير متزامنة لجلب البيانات
         async def fetch_questions():
-            async with await conn:
-                rows = await conn.fetch("SELECT id, user_id, username, question, status, created_at FROM questions ORDER BY created_at DESC")
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                rows = await conn.fetch("""
+                    SELECT id, user_id, username, question, status, reply, created_at 
+                    FROM questions 
+                    ORDER BY created_at DESC
+                """)
                 return [dict(row) for row in rows]
+            finally:
+                await conn.close()
         
-        questions = asyncio.run(fetch_questions())
+        # تشغيل الدالة غير المتزامنة في حلقة جديدة
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        questions = loop.run_until_complete(fetch_questions())
+        loop.close()
         
         # تحويل التواريخ إلى نص
         for q in questions:
@@ -79,14 +87,13 @@ def reply_question():
         reply_text = data.get('reply_text')
         admin_id = data.get('admin_id')
         
-        # التحقق من صلاحية المشرف
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
             
         if not question_id or not reply_text:
             return jsonify({"error": "بيانات ناقصة"}), 400
             
-        # الاتصال بقاعدة البيانات وتحديث السؤال
+        # دالة غير متزامنة للتعامل مع قاعدة البيانات وإرسال الرد
         async def update_and_send():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
@@ -97,7 +104,7 @@ def reply_question():
                 
                 student_id = row['user_id']
                 
-                # 2. تحديث السؤال (إضافة عمود reply إذا لم يكن موجوداً، وتحديث الحالة)
+                # 2. التأكد من وجود عمود reply
                 await conn.execute("""
                     DO $$ 
                     BEGIN 
@@ -106,12 +113,14 @@ def reply_question():
                         END IF;
                     END $$;
                 """)
+                
+                # 3. تحديث السؤال
                 await conn.execute(
                     "UPDATE questions SET reply = $1, status = 'answered' WHERE id = $2",
                     reply_text, question_id
                 )
                 
-                # 3. إرسال الرد للطالب عبر البوت
+                # 4. إرسال الرد للطالب عبر البوت
                 global bot_app
                 if bot_app:
                     await bot_app.bot.send_message(
@@ -128,7 +137,11 @@ def reply_question():
             finally:
                 await conn.close()
         
-        result = asyncio.run(update_and_send())
+        # تشغيل الدالة غير المتزامنة في حلقة جديدة
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(update_and_send())
+        loop.close()
         
         if result.get("error"):
             return jsonify(result), 400
@@ -139,7 +152,7 @@ def reply_question():
         logging.error(f"خطأ في الرد: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 3. دوال البوت الأساسية (بدون تغيير) ---
+# --- 3. دوال البوت الأساسية ---
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -161,11 +174,26 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question_text = update.message.text
     try:
         conn = await asyncpg.connect(DATABASE_URL)
-        await conn.execute(
-            "CREATE TABLE IF NOT EXISTS questions (id SERIAL PRIMARY KEY, user_id BIGINT, username TEXT, question TEXT, status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-        )
-        await conn.execute("INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)", user_id, username, question_text)
-        await conn.close()
+        try:
+            # إنشاء الجدول مع عمود reply
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS questions (
+                    id SERIAL PRIMARY KEY, 
+                    user_id BIGINT, 
+                    username TEXT, 
+                    question TEXT, 
+                    status TEXT DEFAULT 'pending', 
+                    reply TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await conn.execute(
+                "INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)",
+                user_id, username, question_text
+            )
+        finally:
+            await conn.close()
+            
         await update.message.reply_text("✅ تم استلام استفسارك بنجاح! سيتم الرد عليه قريبًا.")
     except Exception as e:
         logging.error(f"خطأ في حفظ السؤال: {e}")
