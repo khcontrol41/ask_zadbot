@@ -4,7 +4,7 @@ import asyncio
 import threading
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import asyncpg
 
@@ -158,31 +158,90 @@ def delete_answered():
         return jsonify({"error": str(e)}), 500
 
 # --- 4. دوال البوت الأساسية ---
-# زر "إرسال استفسار" ثابت سنستخدمه في عدة أماكن
-ASK_BUTTON = [[InlineKeyboardButton("📩 إرسال استفسار", callback_data="ask")]]
+
+# ✅ تعريف أزرار لوحة المفاتيح الثابتة (Reply Keyboard)
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("✏️ سؤال جديد"), KeyboardButton("❓ الأسئلة الشائعة")]
+    ],
+    resize_keyboard=True,  # تصغير حجم الأزرار لتتناسب مع الشاشة
+    one_time_keyboard=False  # الأزرار تبقى ثابتة حتى نطلب إخفاءها
+)
+
+# قائمة الأسئلة الشائعة (يمكنك تعديلها مباشرة هنا)
+FAQ_TEXT = """
+📚 *الأسئلة الشائعة:*
+
+1️⃣ *كيف أحفظ الجزء الثلاثين؟*
+   - يمكنك الاستماع إلى التكرارات اليومية، وتقسيم الحفظ إلى مقاطع صغيرة.
+
+2️⃣ *متى موعد الاختبار القادم؟*
+   - سيتم الإعلان عن موعد الاختبار عبر قنوات المقرأة الرسمية.
+
+3️⃣ *كيف أنضم إلى حلقات التحفيظ؟*
+   - تواصل مع المشرفين عبر البوت، وسيتم توجيهك.
+
+4️⃣ *هل هناك رسوم للانضمام؟*
+   - جميع خدمات المقرأة مجانية.
+
+📌 *للاستفسارات الأخرى، استخدم زر "✏️ سؤال جديد".*
+"""
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رسالة الترحيب مع زر ثابت"""
+    """رسالة الترحيب مع أزرار ثابتة"""
     await update.message.reply_text(
-        "مرحباً بك في بوت استفسارات المقرأة! 📚\nاضغط على الزر أدناه لإرسال استفسارك.",
-        reply_markup=InlineKeyboardMarkup(ASK_BUTTON)
+        "مرحباً بك في بوت استفسارات المقرأة! 📚\n"
+        "اختر أحد الخيارين من الأزرار أدناه:",
+        reply_markup=MAIN_KEYBOARD
     )
 
-async def ask_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عند الضغط على زر إرسال استفسار (نرسل رسالة جديدة ولا نعدل القديمة)"""
-    query = update.callback_query
-    await query.answer()
-    # نرسل رسالة جديدة تطلب الكتابة، بدلاً من تعديل رسالة الترحيب
-    await query.message.reply_text("✍️ من فضلك اكتب استفسارك كرسالة نصية الآن.")
+async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج الأزرار الثابتة (سؤال جديد / أسئلة شائعة)"""
+    text = update.message.text
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "مجهول"
+
+    if text == "✏️ سؤال جديد":
+        # نطلب من المستخدم كتابة سؤاله
+        await update.message.reply_text(
+            "✍️ اكتب سؤالك الآن، وسنقوم بالرد عليه قريباً.",
+            reply_markup=MAIN_KEYBOARD  # نبقي الأزرار ظاهرة
+        )
+        # نقوم بتفعيل "حالة انتظار السؤال" لتحديد أن الرسالة القادمة هي السؤال
+        context.user_data['waiting_for_question'] = True
+
+    elif text == "❓ الأسئلة الشائعة":
+        # نرسل قائمة الأسئلة الشائعة
+        await update.message.reply_text(
+            FAQ_TEXT,
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD
+        )
+        # نعيد تعيين الحالة لمنع الخلط
+        context.user_data['waiting_for_question'] = False
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """استقبال النص وحفظه، ثم إعادة الزر للاستفسارات الجديدة"""
+    """استقبال النص وحفظه كسؤال (فقط إذا كان في حالة انتظار)"""
     user_id = update.effective_user.id
     username = update.effective_user.username or "مجهول"
     question_text = update.message.text
+
+    # ✅ التحقق: هل المستخدم في حالة انتظار السؤال؟
+    if not context.user_data.get('waiting_for_question'):
+        # إذا لم يضغط على "سؤال جديد" أولاً، نطلب منه استخدام الأزرار
+        await update.message.reply_text(
+            "❌ يرجى استخدام الأزرار أدناه لاختيار الإجراء المناسب:\n"
+            "• اضغط *✏️ سؤال جديد* لطرح سؤال.\n"
+            "• اضغط *❓ الأسئلة الشائعة* لعرض الإجابات الجاهزة.",
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD
+        )
+        return
+
+    # ✅ إذا كان في حالة انتظار، نحفظ السؤال
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         try:
@@ -204,32 +263,50 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             await conn.close()
             
-        # ✅ إرسال رسالة تأكيد مع إعادة الزر (ليتمكن من إرسال استفسار آخر)
+        # ✅ إرسال رسالة تأكيد
         await update.message.reply_text(
-            "✅ تم استلام استفسارك بنجاح! سيتم الرد عليه قريبًا.\nيمكنك إرسال استفسار آخر بالضغط على الزر أدناه.",
-            reply_markup=InlineKeyboardMarkup(ASK_BUTTON)
+            "✅ تم استلام استفسارك بنجاح! سيتم الرد عليه قريباً.",
+            reply_markup=MAIN_KEYBOARD
         )
+        # ✅ إعادة تعيين الحالة (لكي لا يحفظ الرسائل التالية كأسئلة)
+        context.user_data['waiting_for_question'] = False
+
+        # (اختياري) إرسال إشعار للمشرفين
+        # يمكنك تفعيل هذا الجزء إذا أردت إشعاراً فورياً
+        # for admin_id in ADMIN_IDS:
+        #     await context.bot.send_message(
+        #         chat_id=admin_id,
+        #         text=f"📩 استفسار جديد من {username}:\n\n{question_text}"
+        #     )
+
     except Exception as e:
         logging.error(f"خطأ في حفظ السؤال: {e}")
-        await update.message.reply_text("❌ حدث خطأ تقني، حاول مرة أخرى لاحقًا.")
+        await update.message.reply_text(
+            "❌ حدث خطأ تقني، حاول مرة أخرى لاحقًا.",
+            reply_markup=MAIN_KEYBOARD
+        )
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """منع إرسال المرفقات (صور، صوت، فيديو، مستندات، إلخ)"""
     await update.message.reply_text(
         "❌ عذراً، هذا البوت يقبل النصوص الكتابية فقط.\n"
-        "يرجى كتابة استفسارك كنص عادي."
+        "يرجى استخدام الأزرار أدناه لاختيار الإجراء المناسب.",
+        reply_markup=MAIN_KEYBOARD
     )
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """فتح لوحة المشرفين"""
+    """فتح لوحة المشرفين (للمشرفين فقط)"""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
-    # ⚠️ IMPORTANT: استبدل هذا الرابط برابط GitHub Pages الخاص بك
+    # ⚠️ استبدل هذا الرابط برابط GitHub Pages الخاص بك
     mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"
     keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
-    await update.message.reply_text("مرحباً أيها المشرف!", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "مرحباً أيها المشرف!",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 # --- 5. تشغيل البوت ---
 def run_bot():
@@ -239,7 +316,8 @@ def run_bot():
 
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CallbackQueryHandler(ask_button, pattern="ask"))
+    # معالج الأزرار الثابتة (يجب وضعه قبل معالج النصوص العادي)
+    bot_app.add_handler(MessageHandler(filters.Regex("^(✏️ سؤال جديد|❓ الأسئلة الشائعة)$"), handle_main_buttons))
     # معالج النصوص (الاستفسارات)
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
     # معالج المرفقات (كل ما ليس نصاً)
