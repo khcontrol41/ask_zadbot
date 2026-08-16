@@ -17,7 +17,7 @@ if not TOKEN:
 if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
-ADMIN_IDS = [5387087412‪]  # ضع رقمك هنا
+ADMIN_IDS = [5387087412]  # ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
