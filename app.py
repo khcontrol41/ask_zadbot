@@ -2,7 +2,8 @@ import os
 import logging
 import asyncio
 import threading
-from flask import Flask
+from flask import Flask, request, jsonify
+from flask_cors import CORS  # مكتبة جديدة للسماح بالاتصال
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import asyncpg
@@ -17,13 +18,16 @@ if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
 # ⚠️ IMPORTANT: اكتب رقمك هنا يدوياً (لا تنسخه من أي مكان)
-# مثال: ADMIN_IDS = [987654321]
-ADMIN_IDS = [5387087412]  # ضع رقمك هنا (اكتبه بيدك)
+ADMIN_IDS = [5387087412]  # ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- 2. تهيئة Flask ---
+# --- 2. تهيئة Flask مع دعم CORS ---
 app = Flask(__name__)
+CORS(app)  # هذا السطر يسمح للواجهة (GitHub Pages) بالاتصال بالخادم
+
+# متغير عام لحمل كائن البوت لإرسال الردود
+bot_app = None
 
 @app.route('/')
 def home():
@@ -33,7 +37,109 @@ def home():
 def health():
     return "OK"
 
-# --- 3. دوال البوت ---
+# --- نقاط النهاية الجديدة للواجهة (API) ---
+
+@app.route('/get_questions', methods=['POST'])
+def get_questions():
+    """ترجع قائمة الاستفسارات من قاعدة البيانات"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        
+        # التحقق من صلاحية المشرف
+        if user_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+
+        # الاتصال بقاعدة البيانات وجلب الاستفسارات
+        conn = asyncpg.connect(DATABASE_URL)
+        # تنفيذ استعلامين (select) بشكل متزامن (نستخدم asyncio.run)
+        async def fetch_questions():
+            async with await conn:
+                rows = await conn.fetch("SELECT id, user_id, username, question, status, created_at FROM questions ORDER BY created_at DESC")
+                return [dict(row) for row in rows]
+        
+        questions = asyncio.run(fetch_questions())
+        
+        # تحويل التواريخ إلى نص
+        for q in questions:
+            q['created_at'] = q['created_at'].isoformat() if q['created_at'] else None
+            
+        return jsonify(questions), 200
+        
+    except Exception as e:
+        logging.error(f"خطأ في جلب الأسئلة: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/reply', methods=['POST'])
+def reply_question():
+    """استقبال رد المشرف وإرساله للطالب وتحديث قاعدة البيانات"""
+    try:
+        data = request.get_json()
+        question_id = data.get('question_id')
+        reply_text = data.get('reply_text')
+        admin_id = data.get('admin_id')
+        
+        # التحقق من صلاحية المشرف
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+            
+        if not question_id or not reply_text:
+            return jsonify({"error": "بيانات ناقصة"}), 400
+            
+        # الاتصال بقاعدة البيانات وتحديث السؤال
+        async def update_and_send():
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                # 1. الحصول على user_id الخاص بالطالب
+                row = await conn.fetchrow("SELECT user_id FROM questions WHERE id = $1", question_id)
+                if not row:
+                    return {"error": "السؤال غير موجود"}
+                
+                student_id = row['user_id']
+                
+                # 2. تحديث السؤال (إضافة عمود reply إذا لم يكن موجوداً، وتحديث الحالة)
+                await conn.execute("""
+                    DO $$ 
+                    BEGIN 
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='questions' AND column_name='reply') THEN
+                            ALTER TABLE questions ADD COLUMN reply TEXT;
+                        END IF;
+                    END $$;
+                """)
+                await conn.execute(
+                    "UPDATE questions SET reply = $1, status = 'answered' WHERE id = $2",
+                    reply_text, question_id
+                )
+                
+                # 3. إرسال الرد للطالب عبر البوت
+                global bot_app
+                if bot_app:
+                    await bot_app.bot.send_message(
+                        chat_id=student_id,
+                        text=f"📩 *تم الرد على استفسارك:*\n\n{reply_text}",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    logging.error("البوت ليس جاهزاً لإرسال الرسائل")
+                    return {"error": "البوت غير جاهز"}
+                
+                return {"success": True}
+                
+            finally:
+                await conn.close()
+        
+        result = asyncio.run(update_and_send())
+        
+        if result.get("error"):
+            return jsonify(result), 400
+            
+        return jsonify({"success": True}), 200
+        
+    except Exception as e:
+        logging.error(f"خطأ في الرد: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# --- 3. دوال البوت الأساسية (بدون تغيير) ---
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -77,6 +183,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- 4. تشغيل البوت ---
 def run_bot():
+    global bot_app
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -87,7 +194,6 @@ def run_bot():
     bot_app.add_handler(CommandHandler("admin", admin_panel))
     
     print("✅ البوت يعمل...")
-    # تجاهل إشارات النظام لتجنب خطأ set_wakeup_fd
     bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
 
 # --- 5. تشغيل Flask مع البوت في خلفية ---
