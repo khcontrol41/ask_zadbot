@@ -17,7 +17,7 @@ if not TOKEN:
 if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
-ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
+ADMIN_IDS = [5387987412]  # ⚠️ ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -159,7 +159,7 @@ def delete_answered():
 
 # --- 4. دوال البوت الأساسية ---
 
-# ✅ تعريف الأزرار الثابتة الجديدة (طبقاً للنص الجديد)
+# ✅ تعريف الأزرار الثابتة
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("📩 سؤال جديد"), KeyboardButton("📚 الأسئلة الشائعة")]
@@ -168,7 +168,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
-# قائمة الأسئلة الشائعة (مؤقتة، سيتم تعديلها في الخطوة النهائية)
+# قائمة الأسئلة الشائعة (سيتم تعديلها لاحقاً)
 FAQ_TEXT = """
 📚 *الأسئلة الشائعة:*
 
@@ -191,14 +191,16 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رسالة الترحيب الجديدة مع الأزرار المحدثة"""
+    """رسالة الترحيب الجديدة (محدثة)"""
     welcome_text = """
-🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان» 🤍
-​يسرّنا انضمامكم إلينا، ونسأل الله تعالى أن يوفقنا لخدمتكم وأن نكون عونًا لكم في رحلتكم المباركة.
+🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان»
+
+​يسرّنا انضمامكم إلينا، ونسأل الله تعالى أن يوفقنا لخدمتكم وأن نكون عونًا لكم في رحلتكم.
 ​"يبدأ الطريق بخطوة، وتُقطف ثماره بختمة.. فابدأ مسيرتك، ونحن معك حتى تذوق حلاوة الختمة."
 
 ​🫧 الخدمات المتاحة عبر البوت:
-يُتيح لكم هذا البوت الوصول المباشر إلى كافة المعلومات والخدمات الخاصة بالمقرأة، والتي تشمل:
+صُمِّم هذا البوت للإجابة عن كافة استفساراتكم حول المقرأة، وتسهيل وصولكم إلى المعلومات التي تحتاجونها بكل يسر، بما في ذلك:
+
 ​📚 البرامج والمسارات التعليمية
 ​🗓️ مواعيد الحلقات واللقاءات
 ​📝 إجراءات التسجيل وضوابط الدراسة
@@ -218,36 +220,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الأزرار الثابتة (سؤال جديد / أسئلة شائعة)"""
+    """معالج الأزرار الثابتة"""
     text = update.message.text
-    user_id = update.effective_user.id
 
     if text == "📩 سؤال جديد":
-        # ✅ إخفاء الأزرار فوراً للسماح بالكتابة
         await update.message.reply_text(
             "✍️ اكتب سؤالك الآن، وسنقوم بالرد عليه قريباً.",
-            reply_markup=ReplyKeyboardRemove()  # إخفاء الأزرار
+            reply_markup=ReplyKeyboardRemove()
         )
-        # تفعيل حالة انتظار السؤال
         context.user_data['waiting_for_question'] = True
 
     elif text == "📚 الأسئلة الشائعة":
-        # ✅ إظهار الأسئلة مع إبقاء الأزرار ظاهرة (لأن المستخدم قد يريد العودة)
         await update.message.reply_text(
             FAQ_TEXT,
             parse_mode="Markdown",
             reply_markup=MAIN_KEYBOARD
         )
-        # إعادة تعيين الحالة لمنع الخلط
         context.user_data['waiting_for_question'] = False
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """استقبال النص وحفظه كسؤال (فقط إذا كان في حالة انتظار)"""
+    """استقبال النص وحفظه كسؤال"""
     user_id = update.effective_user.id
     username = update.effective_user.username or "مجهول"
     question_text = update.message.text
 
-    # ✅ التحقق: هل المستخدم في حالة انتظار السؤال؟
     if not context.user_data.get('waiting_for_question'):
         await update.message.reply_text(
             "❌ يرجى استخدام الأزرار أدناه لاختيار الإجراء المناسب:\n"
@@ -258,7 +254,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ✅ حفظ السؤال في قاعدة البيانات
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         try:
@@ -280,16 +275,13 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             await conn.close()
             
-        # ✅ إرسال رسالة تأكيد مع إعادة الأزرار
         await update.message.reply_text(
             "✅ تم استلام استفسارك بنجاح! سيتم الرد عليه قريباً.",
-            reply_markup=MAIN_KEYBOARD  # إعادة الأزرار
+            reply_markup=MAIN_KEYBOARD
         )
-        # ✅ إعادة تعيين الحالة
         context.user_data['waiting_for_question'] = False
 
-        # ✅ إرسال إشعار للمشرفين (بدون معاينة النص أو اسم المستخدم)
-        mini_app_url = "https://your-username.github.io/makraa-admin/"  # سيتم تحديثه لاحقاً
+        # ✅ إرسال إشعار للمشرفين (بدون معاينة)
         for admin_id in ADMIN_IDS:
             try:
                 await context.bot.send_message(
@@ -307,7 +299,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """منع إرسال المرفقات (صور، صوت، فيديو، مستندات، إلخ)"""
+    """منع المرفقات"""
     await update.message.reply_text(
         "❌ عذراً، هذا البوت يقبل النصوص الكتابية فقط.\n"
         "يرجى استخدام الأزرار أدناه لاختيار الإجراء المناسب.",
@@ -315,7 +307,6 @@ async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """فتح لوحة المشرفين (للمشرفين فقط)"""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
@@ -336,11 +327,8 @@ def run_bot():
 
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
-    # معالج الأزرار الثابتة
     bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
-    # معالج النصوص (الاستفسارات)
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
-    # معالج المرفقات
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
     
