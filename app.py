@@ -17,16 +17,18 @@ if not TOKEN:
 if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
-# ⚠️ IMPORTANT: اكتب رقمك هنا يدوياً (لا تنسخه من أي مكان)
 ADMIN_IDS = [5387087412]  # ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- 2. تهيئة Flask مع دعم CORS ---
+# --- 2. حلقة أحداث ثابتة ---
+main_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(main_loop)
+
+# --- 3. تهيئة Flask ---
 app = Flask(__name__)
 CORS(app)
 
-# متغير عام لحمل كائن البوت
 bot_app = None
 
 @app.route('/')
@@ -51,9 +53,7 @@ def get_questions():
         async def fetch_questions():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # ✅ إصلاح الخطأ: إضافة عمود reply إذا لم يكن موجوداً
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
-                
                 rows = await conn.fetch("""
                     SELECT id, user_id, username, question, status, reply, created_at 
                     FROM questions 
@@ -63,10 +63,7 @@ def get_questions():
             finally:
                 await conn.close()
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        questions = loop.run_until_complete(fetch_questions())
-        loop.close()
+        questions = main_loop.run_until_complete(fetch_questions())
         
         for q in questions:
             q['created_at'] = q['created_at'].isoformat() if q['created_at'] else None
@@ -94,7 +91,6 @@ def reply_question():
         async def update_and_send():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # ✅ إصلاح إضافي: التأكد من وجود العمود قبل التحديث
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
                 
                 row = await conn.fetchrow("SELECT user_id FROM questions WHERE id = $1", question_id)
@@ -124,10 +120,7 @@ def reply_question():
             finally:
                 await conn.close()
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(update_and_send())
-        loop.close()
+        result = main_loop.run_until_complete(update_and_send())
         
         if result.get("error"):
             return jsonify(result), 400
@@ -138,7 +131,37 @@ def reply_question():
         logging.error(f"خطأ في الرد: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 3. دوال البوت الأساسية ---
+# --- نقطة نهاية جديدة لحذف الاستفسارات التي تم الرد عليها ---
+@app.route('/delete_answered', methods=['POST'])
+def delete_answered():
+    try:
+        data = request.get_json()
+        admin_id = data.get('admin_id')
+        
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+            
+        async def delete_answered_async():
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                # حذف جميع الاستفسارات التي حالتها 'answered' (تم الرد عليها)
+                result = await conn.execute("DELETE FROM questions WHERE status = 'answered'")
+                # نتيجة الحذف تأتي بصيغة مثل "DELETE 5"
+                import re
+                match = re.search(r'DELETE (\d+)', result)
+                count = int(match.group(1)) if match else 0
+                return {"success": True, "deleted": count}
+            finally:
+                await conn.close()
+        
+        result = main_loop.run_until_complete(delete_answered_async())
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logging.error(f"خطأ في حذف الأسئلة المجاب عليها: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# --- 4. دوال البوت الأساسية ---
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -161,7 +184,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         try:
-            # ✅ إضافة عمود reply أثناء إنشاء الجدول لمنع المشكلة مستقبلاً
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS questions (
                     id SERIAL PRIMARY KEY, 
@@ -195,7 +217,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
     await update.message.reply_text("مرحباً أيها المشرف!", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- 4. تشغيل البوت ---
+# --- 5. تشغيل البوت ---
 def run_bot():
     global bot_app
     loop = asyncio.new_event_loop()
@@ -210,7 +232,7 @@ def run_bot():
     print("✅ البوت يعمل...")
     bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
 
-# --- 5. تشغيل Flask مع البوت في خلفية ---
+# --- 6. تشغيل Flask ---
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
