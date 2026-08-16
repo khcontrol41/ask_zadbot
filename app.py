@@ -4,7 +4,7 @@ import asyncio
 import threading
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import asyncpg
 
@@ -17,7 +17,7 @@ if not TOKEN:
 if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
-ADMIN_IDS = [5387087412]  # ضع رقمك هنا
+ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -159,16 +159,16 @@ def delete_answered():
 
 # --- 4. دوال البوت الأساسية ---
 
-# ✅ تعريف أزرار لوحة المفاتيح الثابتة (Reply Keyboard)
+# ✅ تعريف الأزرار الثابتة الجديدة (طبقاً للنص الجديد)
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("✏️ سؤال جديد"), KeyboardButton("❓ الأسئلة الشائعة")]
+        [KeyboardButton("📩 سؤال جديد"), KeyboardButton("📚 الأسئلة الشائعة")]
     ],
-    resize_keyboard=True,  # تصغير حجم الأزرار لتتناسب مع الشاشة
-    one_time_keyboard=False  # الأزرار تبقى ثابتة حتى نطلب إخفاءها
+    resize_keyboard=True,
+    one_time_keyboard=False
 )
 
-# قائمة الأسئلة الشائعة (يمكنك تعديلها مباشرة هنا)
+# قائمة الأسئلة الشائعة (مؤقتة، سيتم تعديلها في الخطوة النهائية)
 FAQ_TEXT = """
 📚 *الأسئلة الشائعة:*
 
@@ -184,17 +184,36 @@ FAQ_TEXT = """
 4️⃣ *هل هناك رسوم للانضمام؟*
    - جميع خدمات المقرأة مجانية.
 
-📌 *للاستفسارات الأخرى، استخدم زر "✏️ سؤال جديد".*
+📌 *للاستفسارات الأخرى، استخدم زر "📩 سؤال جديد".*
 """
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رسالة الترحيب مع أزرار ثابتة"""
+    """رسالة الترحيب الجديدة مع الأزرار المحدثة"""
+    welcome_text = """
+🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان» 🤍
+​يسرّنا انضمامكم إلينا، ونسأل الله تعالى أن يوفقنا لخدمتكم وأن نكون عونًا لكم في رحلتكم المباركة.
+​"يبدأ الطريق بخطوة، وتُقطف ثماره بختمة.. فابدأ مسيرتك، ونحن معك حتى تذوق حلاوة الختمة."
+
+​🫧 الخدمات المتاحة عبر البوت:
+يُتيح لكم هذا البوت الوصول المباشر إلى كافة المعلومات والخدمات الخاصة بالمقرأة، والتي تشمل:
+​📚 البرامج والمسارات التعليمية
+​🗓️ مواعيد الحلقات واللقاءات
+​📝 إجراءات التسجيل وضوابط الدراسة
+​📖 اللوائح التنظيمية وآلية المتابعة
+​💬 الاستفسارات العامة والخدمات الإدارية
+
+📌 يرجى تحديد الخيار المناسب من القائمة أدناه:
+​📚 الأسئلة الشائعة — للاطلاع على الإرشادات والإجابات المعتمدة.
+
+​📩 سؤال جديد — للتواصل المباشر مع الكادر الإشرافي بالمقرأة.
+
+​🌱 «لا تتردد في السؤال، فوضوح الطريق يُعين على حسن المسير»
+"""
     await update.message.reply_text(
-        "مرحباً بك في بوت استفسارات المقرأة! 📚\n"
-        "اختر أحد الخيارين من الأزرار أدناه:",
+        welcome_text,
         reply_markup=MAIN_KEYBOARD
     )
 
@@ -202,25 +221,24 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     """معالج الأزرار الثابتة (سؤال جديد / أسئلة شائعة)"""
     text = update.message.text
     user_id = update.effective_user.id
-    username = update.effective_user.username or "مجهول"
 
-    if text == "✏️ سؤال جديد":
-        # نطلب من المستخدم كتابة سؤاله
+    if text == "📩 سؤال جديد":
+        # ✅ إخفاء الأزرار فوراً للسماح بالكتابة
         await update.message.reply_text(
             "✍️ اكتب سؤالك الآن، وسنقوم بالرد عليه قريباً.",
-            reply_markup=MAIN_KEYBOARD  # نبقي الأزرار ظاهرة
+            reply_markup=ReplyKeyboardRemove()  # إخفاء الأزرار
         )
-        # نقوم بتفعيل "حالة انتظار السؤال" لتحديد أن الرسالة القادمة هي السؤال
+        # تفعيل حالة انتظار السؤال
         context.user_data['waiting_for_question'] = True
 
-    elif text == "❓ الأسئلة الشائعة":
-        # نرسل قائمة الأسئلة الشائعة
+    elif text == "📚 الأسئلة الشائعة":
+        # ✅ إظهار الأسئلة مع إبقاء الأزرار ظاهرة (لأن المستخدم قد يريد العودة)
         await update.message.reply_text(
             FAQ_TEXT,
             parse_mode="Markdown",
             reply_markup=MAIN_KEYBOARD
         )
-        # نعيد تعيين الحالة لمنع الخلط
+        # إعادة تعيين الحالة لمنع الخلط
         context.user_data['waiting_for_question'] = False
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,17 +249,16 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ✅ التحقق: هل المستخدم في حالة انتظار السؤال؟
     if not context.user_data.get('waiting_for_question'):
-        # إذا لم يضغط على "سؤال جديد" أولاً، نطلب منه استخدام الأزرار
         await update.message.reply_text(
             "❌ يرجى استخدام الأزرار أدناه لاختيار الإجراء المناسب:\n"
-            "• اضغط *✏️ سؤال جديد* لطرح سؤال.\n"
-            "• اضغط *❓ الأسئلة الشائعة* لعرض الإجابات الجاهزة.",
+            "• اضغط *📩 سؤال جديد* لطرح سؤال.\n"
+            "• اضغط *📚 الأسئلة الشائعة* لعرض الإجابات الجاهزة.",
             parse_mode="Markdown",
             reply_markup=MAIN_KEYBOARD
         )
         return
 
-    # ✅ إذا كان في حالة انتظار، نحفظ السؤال
+    # ✅ حفظ السؤال في قاعدة البيانات
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         try:
@@ -263,21 +280,24 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             await conn.close()
             
-        # ✅ إرسال رسالة تأكيد
+        # ✅ إرسال رسالة تأكيد مع إعادة الأزرار
         await update.message.reply_text(
             "✅ تم استلام استفسارك بنجاح! سيتم الرد عليه قريباً.",
-            reply_markup=MAIN_KEYBOARD
+            reply_markup=MAIN_KEYBOARD  # إعادة الأزرار
         )
-        # ✅ إعادة تعيين الحالة (لكي لا يحفظ الرسائل التالية كأسئلة)
+        # ✅ إعادة تعيين الحالة
         context.user_data['waiting_for_question'] = False
 
-        # (اختياري) إرسال إشعار للمشرفين
-        # يمكنك تفعيل هذا الجزء إذا أردت إشعاراً فورياً
-        # for admin_id in ADMIN_IDS:
-        #     await context.bot.send_message(
-        #         chat_id=admin_id,
-        #         text=f"📩 استفسار جديد من {username}:\n\n{question_text}"
-        #     )
+        # ✅ إرسال إشعار للمشرفين (بدون معاينة النص أو اسم المستخدم)
+        mini_app_url = "https://your-username.github.io/makraa-admin/"  # سيتم تحديثه لاحقاً
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text="📩 هناك استفسار جديد في لوحة التحكم."
+                )
+            except Exception as e:
+                logging.error(f"فشل إرسال الإشعار للمشرف {admin_id}: {e}")
 
     except Exception as e:
         logging.error(f"خطأ في حفظ السؤال: {e}")
@@ -316,11 +336,11 @@ def run_bot():
 
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
-    # معالج الأزرار الثابتة (يجب وضعه قبل معالج النصوص العادي)
-    bot_app.add_handler(MessageHandler(filters.Regex("^(✏️ سؤال جديد|❓ الأسئلة الشائعة)$"), handle_main_buttons))
+    # معالج الأزرار الثابتة
+    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
     # معالج النصوص (الاستفسارات)
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
-    # معالج المرفقات (كل ما ليس نصاً)
+    # معالج المرفقات
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
     
