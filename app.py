@@ -21,7 +21,7 @@ ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن بأمان (حل مشكلة Event Loop) ---
+# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن بأمان ---
 def run_async(coro):
     try:
         loop = asyncio.get_event_loop()
@@ -212,7 +212,6 @@ def reply_question():
         logging.error(f"خطأ في الرد: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- نقطة النهاية الجديدة: الرد الجماعي (Bulk Reply) ---
 @app.route('/bulk_reply', methods=['POST'])
 def bulk_reply():
     try:
@@ -225,7 +224,7 @@ def bulk_reply():
             return jsonify({"error": "غير مصرح"}), 403
             
         if not question_ids or not reply_text:
-            return jsonify({"error": "بيانات ناقصة (يجب اختيار أسئلة وكتابة رد)"}), 400
+            return jsonify({"error": "بيانات ناقصة"}), 400
 
         async def bulk_async():
             conn = await asyncpg.connect(DATABASE_URL)
@@ -239,7 +238,6 @@ def bulk_reply():
                 
                 for q_id in question_ids:
                     try:
-                        # 1. التحقق من حالة السؤال
                         row = await conn.fetchrow(
                             "SELECT user_id, assigned_to, status FROM questions WHERE id = $1", 
                             q_id
@@ -253,14 +251,11 @@ def bulk_reply():
                         assigned_to = row['assigned_to']
                         status = row['status']
                         
-                        # 2. السماح فقط بالأسئلة المعلّقة (pending) أو المسندة لهذا المشرف (processing)
                         if status == 'pending' or (status == 'processing' and assigned_to == admin_id):
-                            # تحديث السؤال إلى answered
                             await conn.execute(
                                 "UPDATE questions SET reply = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
                                 reply_text, admin_id, q_id
                             )
-                            # إرسال الرد للطالب
                             global bot_app
                             if bot_app:
                                 try:
@@ -271,11 +266,9 @@ def bulk_reply():
                                     )
                                 except Exception as e:
                                     logging.error(f"فشل إرسال الرد للطالب {student_id}: {e}")
-                                    # نعتبر العملية ناجحة من ناحية قاعدة البيانات، لكن نسجل الخطأ
                             
                             success_count += 1
                         else:
-                            # السؤال ليس في حالة صالحة للرد (مثل answered أو processing بواسطة آخر)
                             failed_ids.append(q_id)
                             failed_reasons.append(f"السؤال {q_id} غير متاح للرد (الحالة: {status})")
                             
@@ -392,9 +385,30 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    username = update.effective_user.username or "مجهول"
+    username = update.effective_user.username  # سيصبح None إذا لم يكن هناك معرف
     question_text = update.message.text
 
+    # ✅ التحقق من أن المستخدم ليس مشرفاً أولاً (المشرفون معفيون)
+    if not is_admin(user_id):
+        # ✅ إذا كان المستخدم ليس لديه معرف (Username)
+        if not username or username == "":
+            # ✅ رسالة التوجيه (يمكنك تعديل معرف الدعم هنا)
+            await update.message.reply_text(
+                "⚠️ *تنبيه:* لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام (Username).\n\n"
+                "📝 *كيفية إنشاء معرف في تيليجرام:*\n"
+                "1. افتح إعدادات تيليجرام (Settings).\n"
+                "2. اضغط على اسمك أو صورتك الشخصية.\n"
+                "3. اختر 'Username' (اسم المستخدم).\n"
+                "4. اكتب اسماً فريداً (حروف وأرقام) واضغط حفظ.\n\n"
+                "🔹 *إذا واجهتك صعوبة، يرجى التواصل مع الدعم التقني:* @zad41"
+                "📌 سيساعدك الفريق في إعداد معرفك ليتمكن المشرف من التواصل معك والرد على استفسارك.",
+                parse_mode="Markdown",
+                reply_markup=MAIN_KEYBOARD
+            )
+            # ❌ نمنع حفظ السؤال ونخرج من الدالة
+            return
+
+    # ✅ إذا كان المستخدم مشرفاً أو لديه معرف، نكمل حفظ السؤال
     if not context.user_data.get('waiting_for_question'):
         await update.message.reply_text(
             "❌ يُرجى استخدام الأيقونات الظاهرة أدناه لاختيار الخدمة المناسبة:\n\n"
@@ -419,9 +433,10 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # ✅ نخزن المعرف الفعلي (إذا كان موجوداً) أو نضع "مجهول" للمشرفين (لكن المشرفين لن يصلوا هنا عادة)
             await conn.execute(
                 "INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)",
-                user_id, username, question_text
+                user_id, username or "مجهول", question_text
             )
         finally:
             await conn.close()
