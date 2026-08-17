@@ -40,6 +40,44 @@ def health():
     return "OK"
 
 # --- نقاط النهاية للواجهة (API) ---
+
+# نقطة نهاية جديدة للإسناد
+@app.route('/assign', methods=['POST'])
+def assign_question():
+    try:
+        data = request.get_json()
+        question_id = data.get('question_id')
+        admin_id = data.get('admin_id')
+        
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+
+        async def assign_async():
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                # إضافة عمود assigned_to إذا لم يكن موجوداً
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
+                # تحديث الحالة إلى processing وتعيين المشرف
+                result = await conn.execute(
+                    "UPDATE questions SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
+                    admin_id, question_id
+                )
+                # التحقق من أنه تم تحديث سطر واحد على الأقل
+                if result == "UPDATE 0":
+                    return {"error": "السؤال ليس في حالة انتظار أو تم إسناده بالفعل"}
+                return {"success": True}
+            finally:
+                await conn.close()
+        
+        result = main_loop.run_until_complete(assign_async())
+        if result.get("error"):
+            return jsonify(result), 400
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logging.error(f"خطأ في إسناد السؤال: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/get_questions', methods=['POST'])
 def get_questions():
     try:
@@ -53,8 +91,9 @@ def get_questions():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
                 rows = await conn.fetch("""
-                    SELECT id, user_id, username, question, status, reply, created_at 
+                    SELECT id, user_id, username, question, status, reply, assigned_to, created_at 
                     FROM questions 
                     ORDER BY created_at DESC
                 """)
@@ -91,16 +130,28 @@ def reply_question():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
                 
-                row = await conn.fetchrow("SELECT user_id FROM questions WHERE id = $1", question_id)
+                # التأكد من أن المشرف هو المعين أو أن السؤال معلق
+                row = await conn.fetchrow(
+                    "SELECT user_id, assigned_to FROM questions WHERE id = $1", 
+                    question_id
+                )
                 if not row:
                     return {"error": "السؤال غير موجود"}
                 
                 student_id = row['user_id']
+                assigned_to = row['assigned_to']
                 
+                # إذا كان السؤال في حالة processing، يجب أن يكون هذا المشرف هو المعين
+                # إذا كان pending، نسمح بالرد مع تعيينه له (حماية)
+                if assigned_to and assigned_to != admin_id:
+                    return {"error": "هذا السؤال يُعالج من قبل مشرف آخر"}
+                
+                # تحديث السؤال إلى answered وحفظ الرد
                 await conn.execute(
-                    "UPDATE questions SET reply = $1, status = 'answered' WHERE id = $2",
-                    reply_text, question_id
+                    "UPDATE questions SET reply = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
+                    reply_text, admin_id, question_id
                 )
                 
                 global bot_app
@@ -243,6 +294,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     question TEXT, 
                     status TEXT DEFAULT 'pending', 
                     reply TEXT,
+                    assigned_to BIGINT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -288,7 +340,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
     
-    # ✅ دمج الزر مع رسالة الترحيب (حذف النص الإضافي)
     mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"  # ⚠️ غيّر هذا الرابط
     keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
     await update.message.reply_text(
