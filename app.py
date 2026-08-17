@@ -17,7 +17,7 @@ if not TOKEN:
 if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
-ADMIN_IDS = [5387987412]  # ⚠️ ضع رقمك هنا
+ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -159,7 +159,6 @@ def delete_answered():
 
 # --- 4. دوال البوت الأساسية ---
 
-# ✅ تعريف الأزرار الثابتة
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("📩 سؤال جديد"), KeyboardButton("📚 الأسئلة الشائعة")]
@@ -168,30 +167,11 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
-# قائمة الأسئلة الشائعة (سيتم تعديلها لاحقاً)
-FAQ_TEXT = """
-📚 *الأسئلة الشائعة:*
-
-1️⃣ *كيف أحفظ الجزء الثلاثين؟*
-   - يمكنك الاستماع إلى التكرارات اليومية، وتقسيم الحفظ إلى مقاطع صغيرة.
-
-2️⃣ *متى موعد الاختبار القادم؟*
-   - سيتم الإعلان عن موعد الاختبار عبر قنوات المقرأة الرسمية.
-
-3️⃣ *كيف أنضم إلى حلقات التحفيظ؟*
-   - تواصل مع المشرفين عبر البوت، وسيتم توجيهك.
-
-4️⃣ *هل هناك رسوم للانضمام؟*
-   - جميع خدمات المقرأة مجانية.
-
-📌 *للاستفسارات الأخرى، استخدم زر "📩 سؤال جديد".*
-"""
-
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رسالة الترحيب الجديدة (محدثة)"""
+    """رسالة الترحيب (معدلة)"""
     welcome_text = """
 🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان»
 
@@ -207,9 +187,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ​📖 اللوائح التنظيمية وآلية المتابعة
 ​💬 الاستفسارات العامة والخدمات الإدارية
 
-📌 يرجى تحديد الخيار المناسب من القائمة أدناه:
-​📚 الأسئلة الشائعة — للاطلاع على الإرشادات والإجابات المعتمدة.
+📌 يرجى تحديد الخيار المناسب من الأيقونات:
 
+​📚 الأسئلة الشائعة — للاطلاع على الإرشادات والإجابات المعتمدة.
 ​📩 سؤال جديد — للتواصل المباشر مع الكادر الإشرافي بالمقرأة.
 
 ​🌱 «لا تتردد في السؤال، فوضوح الطريق يُعين على حسن المسير»
@@ -220,7 +200,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الأزرار الثابتة"""
     text = update.message.text
 
     if text == "📩 سؤال جديد":
@@ -231,25 +210,27 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['waiting_for_question'] = True
 
     elif text == "📚 الأسئلة الشائعة":
+        # ✅ النص الجديد للأسئلة الشائعة (رقم 14)
+        faq_text = """
+أهلاً بكم.. نعمل حالياً على تحديث قسم الأسئلة الشائعة وستُتاح قريبا بإذن الله. وفي حال كان لديكم أي سؤال، يمكنكم التواصل مع المشرفين مباشرة بالضغط على (📩 سؤال جديد).
+"""
         await update.message.reply_text(
-            FAQ_TEXT,
-            parse_mode="Markdown",
+            faq_text,
             reply_markup=MAIN_KEYBOARD
         )
         context.user_data['waiting_for_question'] = False
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """استقبال النص وحفظه كسؤال"""
     user_id = update.effective_user.id
     username = update.effective_user.username or "مجهول"
     question_text = update.message.text
 
     if not context.user_data.get('waiting_for_question'):
+        # ✅ النص الجديد (رقم 6)
         await update.message.reply_text(
-            "❌ يرجى استخدام الأزرار أدناه لاختيار الإجراء المناسب:\n"
-            "• اضغط *📩 سؤال جديد* لطرح سؤال.\n"
-            "• اضغط *📚 الأسئلة الشائعة* لعرض الإجابات الجاهزة.",
-            parse_mode="Markdown",
+            "❌ يُرجى استخدام الأيقونات الظاهرة أدناه لاختيار الخدمة المناسبة:\n\n"
+            "☜  اضغط \"📩 سؤال جديد\" للتواصل المباشر مع مشرفي المقرأة وطرح سؤالك\n\n"
+            "☜ اضغط \"📚 الأسئلة الشائعة\" للاستفادة من أكثر ما يُطرح من استفسارات",
             reply_markup=MAIN_KEYBOARD
         )
         return
@@ -275,13 +256,14 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             await conn.close()
             
+        # ✅ النص الجديد (رقم 5)
         await update.message.reply_text(
-            "✅ تم استلام استفسارك بنجاح! سيتم الرد عليه قريباً.",
+            "✅ تم استلام استفسارك بنجاح! سيقوم أحد المشرفين بالرد عليه قريباً",
             reply_markup=MAIN_KEYBOARD
         )
         context.user_data['waiting_for_question'] = False
 
-        # ✅ إرسال إشعار للمشرفين (بدون معاينة)
+        # إرسال إشعار للمشرفين
         for admin_id in ADMIN_IDS:
             try:
                 await context.bot.send_message(
@@ -299,10 +281,10 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """منع المرفقات"""
+    # ✅ النص الجديد (رقم 7)
     await update.message.reply_text(
         "❌ عذراً، هذا البوت يقبل النصوص الكتابية فقط.\n"
-        "يرجى استخدام الأزرار أدناه لاختيار الإجراء المناسب.",
+        "☜ اختر الخدمة المطلوبة من القائمة أدناه",
         reply_markup=MAIN_KEYBOARD
     )
 
@@ -311,11 +293,14 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
-    # ⚠️ استبدل هذا الرابط برابط GitHub Pages الخاص بك
-    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"
+    
+    # ✅ النص الجديد (رقم 10)
+    await update.message.reply_text("مرحباً بك. تم تسجيل دخولك كمشرف 🌿")
+    
+    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"  # ⚠️ غيّر هذا الرابط
     keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
     await update.message.reply_text(
-        "مرحباً أيها المشرف!",
+        "يمكنك الآن فتح لوحة التحكم:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
