@@ -23,23 +23,13 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # --- 2. دالة مساعدة لتشغيل الكود غير المتزامن بأمان (حل مشكلة Event Loop) ---
 def run_async(coro):
-    """
-    تقوم بتشغيل دالة غير متزامنة (coroutine) مع إدارة ذكية لحلقة الأحداث.
-    - إذا كانت هناك حلقة مفتوحة في الخيط الحالي، تستخدمها.
-    - إذا كانت الحلقة مغلقة، تقوم بإنشاء حلقة جديدة وتعيينها.
-    - لا تقوم بإغلاق الحلقة بعد التنفيذ (لإعادة استخدامها في الطلبات التالية).
-    """
     try:
-        # محاولة الحصول على الحلقة الحالية في هذا الخيط
         loop = asyncio.get_event_loop()
         if loop.is_closed():
             raise RuntimeError("الحلقة مغلقة، سننشئ جديدة.")
     except RuntimeError:
-        # إذا لم تكن هناك حلقة أو كانت مغلقة، ننشئ واحدة جديدة ونضبطها للخيط الحالي
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    
-    # تشغيل الكوروتين باستخدام الحلقة الحالية (المفتوحة)
     return loop.run_until_complete(coro)
 
 # --- 3. تهيئة Flask ---
@@ -220,6 +210,96 @@ def reply_question():
         
     except Exception as e:
         logging.error(f"خطأ في الرد: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# --- نقطة النهاية الجديدة: الرد الجماعي (Bulk Reply) ---
+@app.route('/bulk_reply', methods=['POST'])
+def bulk_reply():
+    try:
+        data = request.get_json()
+        question_ids = data.get('question_ids', [])
+        reply_text = data.get('reply_text')
+        admin_id = data.get('admin_id')
+        
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+            
+        if not question_ids or not reply_text:
+            return jsonify({"error": "بيانات ناقصة (يجب اختيار أسئلة وكتابة رد)"}), 400
+
+        async def bulk_async():
+            conn = await asyncpg.connect(DATABASE_URL)
+            success_count = 0
+            failed_ids = []
+            failed_reasons = []
+            
+            try:
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
+                
+                for q_id in question_ids:
+                    try:
+                        # 1. التحقق من حالة السؤال
+                        row = await conn.fetchrow(
+                            "SELECT user_id, assigned_to, status FROM questions WHERE id = $1", 
+                            q_id
+                        )
+                        if not row:
+                            failed_ids.append(q_id)
+                            failed_reasons.append(f"السؤال {q_id} غير موجود")
+                            continue
+                        
+                        student_id = row['user_id']
+                        assigned_to = row['assigned_to']
+                        status = row['status']
+                        
+                        # 2. السماح فقط بالأسئلة المعلّقة (pending) أو المسندة لهذا المشرف (processing)
+                        if status == 'pending' or (status == 'processing' and assigned_to == admin_id):
+                            # تحديث السؤال إلى answered
+                            await conn.execute(
+                                "UPDATE questions SET reply = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
+                                reply_text, admin_id, q_id
+                            )
+                            # إرسال الرد للطالب
+                            global bot_app
+                            if bot_app:
+                                try:
+                                    await bot_app.bot.send_message(
+                                        chat_id=student_id,
+                                        text=f"📩 *تم الرد على استفسارك:*\n\n{reply_text}",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as e:
+                                    logging.error(f"فشل إرسال الرد للطالب {student_id}: {e}")
+                                    # نعتبر العملية ناجحة من ناحية قاعدة البيانات، لكن نسجل الخطأ
+                            
+                            success_count += 1
+                        else:
+                            # السؤال ليس في حالة صالحة للرد (مثل answered أو processing بواسطة آخر)
+                            failed_ids.append(q_id)
+                            failed_reasons.append(f"السؤال {q_id} غير متاح للرد (الحالة: {status})")
+                            
+                    except Exception as e:
+                        logging.error(f"خطأ في معالجة السؤال {q_id}: {e}")
+                        failed_ids.append(q_id)
+                        failed_reasons.append(f"خطأ تقني في السؤال {q_id}")
+                
+                return {
+                    "success": True,
+                    "sent": success_count,
+                    "failed": len(failed_ids),
+                    "failed_ids": failed_ids,
+                    "failed_reasons": failed_reasons
+                }
+                
+            finally:
+                await conn.close()
+        
+        result = run_async(bulk_async())
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logging.error(f"خطأ في الرد الجماعي: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/delete_answered', methods=['POST'])
