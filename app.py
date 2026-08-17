@@ -39,7 +39,7 @@ def health():
 
 @app.route('/assign', methods=['POST'])
 def assign_question():
-    """تولي المشرف لهذا السؤال (إسناد صريح)"""
+    """تولي المشرف لهذا السؤال"""
     try:
         data = request.get_json()
         question_id = data.get('question_id')
@@ -69,6 +69,40 @@ def assign_question():
         
     except Exception as e:
         logging.error(f"خطأ في إسناد السؤال: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/unassign', methods=['POST'])
+def unassign_question():
+    """إلغاء تولي المشرف للسؤال (يعيده إلى حالة الانتظار)"""
+    try:
+        data = request.get_json()
+        question_id = data.get('question_id')
+        admin_id = data.get('admin_id')
+        
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+
+        async def unassign_async():
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                # نسمح فقط للمشرف الذي تولى السؤال بإلغاء التولي
+                result = await conn.execute(
+                    "UPDATE questions SET status = 'pending', assigned_to = NULL WHERE id = $1 AND assigned_to = $2 AND status = 'processing'",
+                    question_id, admin_id
+                )
+                if result == "UPDATE 0":
+                    return {"error": "السؤال ليس قيد المعالجة بواسطتك"}
+                return {"success": True}
+            finally:
+                await conn.close()
+        
+        result = asyncio.run(unassign_async())
+        if result.get("error"):
+            return jsonify(result), 400
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logging.error(f"خطأ في إلغاء التولي: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/get_questions', methods=['POST'])
@@ -198,7 +232,7 @@ def delete_answered():
         logging.error(f"خطأ في حذف الأسئلة المجاب عليها: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 4. دوال البوت الأساسية (بدون تغيير) ---
+# --- 4. دوال البوت الأساسية ---
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
