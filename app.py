@@ -365,8 +365,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    user_id = update.effective_user.id
+    username = update.effective_user.username
 
     if text == "📩 سؤال جديد":
+        # ✅ التحقق من وجود معرف (Username)
+        if not username or username == "":
+            # ❌ المستخدم ليس لديه معرف: نرسل رسالة التوجيه فوراً، ولا نفعّل حالة الانتظار
+            await update.message.reply_text(
+                "⚠️ *تنبيه:* لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام (Username).\n\n"
+                "📌 *يرجى إعداد معرف خاص بك، ثم العودة وإرسال استفسارك.*\n\n"
+                "📝 *كيفية إنشاء معرف في تيليجرام:*\n"
+                "1. افتح إعدادات تيليجرام (Settings).\n"
+                "2. اضغط على اسمك أو صورتك الشخصية.\n"
+                "3. اختر 'Username' (اسم المستخدم).\n"
+                "4. اكتب اسماً فريداً (حروف وأرقام) واضغط حفظ.\n\n"
+                "🔹 *إذا واجهتك صعوبة، يرجى التواصل مع الدعم التقني:* @zad41"
+                "📌 سيساعدك الفريق في إعداد معرفك ليتمكن المشرف من التواصل معك والرد على استفسارك.",
+                parse_mode="Markdown",
+                reply_markup=MAIN_KEYBOARD
+            )
+            # ❌ نمنع المتابعة: لا نفعّل waiting_for_question
+            context.user_data['waiting_for_question'] = False
+            return
+
+        # ✅ المستخدم لديه معرف: نسمح له بالكتابة
         await update.message.reply_text(
             "✍️ اكتب سؤالك الآن، وسنقوم بالرد عليه قريباً.",
             reply_markup=ReplyKeyboardRemove()
@@ -388,27 +411,17 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username  # سيصبح None إذا لم يكن هناك معرف
     question_text = update.message.text
 
-    # ✅ التحقق من أن المستخدم ليس مشرفاً أولاً (المشرفون معفيون)
-    if not is_admin(user_id):
-        # ✅ إذا كان المستخدم ليس لديه معرف (Username)
-        if not username or username == "":
-            # ✅ رسالة التوجيه (يمكنك تعديل معرف الدعم هنا)
-            await update.message.reply_text(
-                "⚠️ *تنبيه:* لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام (Username).\n\n"
-                "📝 *كيفية إنشاء معرف في تيليجرام:*\n"
-                "1. افتح إعدادات تيليجرام (Settings).\n"
-                "2. اضغط على اسمك أو صورتك الشخصية.\n"
-                "3. اختر 'Username' (اسم المستخدم).\n"
-                "4. اكتب اسماً فريداً (حروف وأرقام) واضغط حفظ.\n\n"
-                "🔹 *إذا واجهتك صعوبة، يرجى التواصل مع الدعم التقني:* @zad41"
-                "📌 سيساعدك الفريق في إعداد معرفك ليتمكن المشرف من التواصل معك والرد على استفسارك.",
-                parse_mode="Markdown",
-                reply_markup=MAIN_KEYBOARD
-            )
-            # ❌ نمنع حفظ السؤال ونخرج من الدالة
-            return
+    # ✅ التحقق من وجود معرف (لن يصل إلى هنا المستخدمون بدون معرف، لكن للاحتياط)
+    if not is_admin(user_id) and (not username or username == ""):
+        # في حال وصول هنا (لن يحدث)، نرسل رسالة توجيه ونمنع الحفظ
+        await update.message.reply_text(
+            "⚠️ لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام.\n"
+            "يرجى إعداد معرف في الإعدادات ثم العودة لإرسال استفسارك.",
+            reply_markup=MAIN_KEYBOARD
+        )
+        return
 
-    # ✅ إذا كان المستخدم مشرفاً أو لديه معرف، نكمل حفظ السؤال
+    # ✅ التحقق من حالة الانتظار
     if not context.user_data.get('waiting_for_question'):
         await update.message.reply_text(
             "❌ يُرجى استخدام الأيقونات الظاهرة أدناه لاختيار الخدمة المناسبة:\n\n"
@@ -433,7 +446,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # ✅ نخزن المعرف الفعلي (إذا كان موجوداً) أو نضع "مجهول" للمشرفين (لكن المشرفين لن يصلوا هنا عادة)
             await conn.execute(
                 "INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)",
                 user_id, username or "مجهول", question_text
