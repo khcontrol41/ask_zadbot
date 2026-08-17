@@ -21,11 +21,7 @@ ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- 2. حلقة أحداث ثابتة ---
-main_loop = asyncio.new_event_loop()
-asyncio.set_event_loop(main_loop)
-
-# --- 3. تهيئة Flask ---
+# --- 2. تهيئة Flask ---
 app = Flask(__name__)
 CORS(app)
 
@@ -41,7 +37,6 @@ def health():
 
 # --- نقاط النهاية للواجهة (API) ---
 
-# نقطة نهاية جديدة للإسناد
 @app.route('/assign', methods=['POST'])
 def assign_question():
     try:
@@ -55,21 +50,19 @@ def assign_question():
         async def assign_async():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # إضافة عمود assigned_to إذا لم يكن موجوداً
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
-                # تحديث الحالة إلى processing وتعيين المشرف
                 result = await conn.execute(
                     "UPDATE questions SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
                     admin_id, question_id
                 )
-                # التحقق من أنه تم تحديث سطر واحد على الأقل
                 if result == "UPDATE 0":
                     return {"error": "السؤال ليس في حالة انتظار أو تم إسناده بالفعل"}
                 return {"success": True}
             finally:
                 await conn.close()
         
-        result = main_loop.run_until_complete(assign_async())
+        # ✅ استخدام asyncio.run() لحل مشكلة الحلقة
+        result = asyncio.run(assign_async())
         if result.get("error"):
             return jsonify(result), 400
         return jsonify(result), 200
@@ -101,7 +94,8 @@ def get_questions():
             finally:
                 await conn.close()
         
-        questions = main_loop.run_until_complete(fetch_questions())
+        # ✅ استخدام asyncio.run()
+        questions = asyncio.run(fetch_questions())
         
         for q in questions:
             q['created_at'] = q['created_at'].isoformat() if q['created_at'] else None
@@ -132,7 +126,6 @@ def reply_question():
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
                 
-                # التأكد من أن المشرف هو المعين أو أن السؤال معلق
                 row = await conn.fetchrow(
                     "SELECT user_id, assigned_to FROM questions WHERE id = $1", 
                     question_id
@@ -143,12 +136,9 @@ def reply_question():
                 student_id = row['user_id']
                 assigned_to = row['assigned_to']
                 
-                # إذا كان السؤال في حالة processing، يجب أن يكون هذا المشرف هو المعين
-                # إذا كان pending، نسمح بالرد مع تعيينه له (حماية)
                 if assigned_to and assigned_to != admin_id:
                     return {"error": "هذا السؤال يُعالج من قبل مشرف آخر"}
                 
-                # تحديث السؤال إلى answered وحفظ الرد
                 await conn.execute(
                     "UPDATE questions SET reply = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
                     reply_text, admin_id, question_id
@@ -170,7 +160,8 @@ def reply_question():
             finally:
                 await conn.close()
         
-        result = main_loop.run_until_complete(update_and_send())
+        # ✅ استخدام asyncio.run()
+        result = asyncio.run(update_and_send())
         
         if result.get("error"):
             return jsonify(result), 400
@@ -201,14 +192,15 @@ def delete_answered():
             finally:
                 await conn.close()
         
-        result = main_loop.run_until_complete(delete_answered_async())
+        # ✅ استخدام asyncio.run()
+        result = asyncio.run(delete_answered_async())
         return jsonify(result), 200
         
     except Exception as e:
         logging.error(f"خطأ في حذف الأسئلة المجاب عليها: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 4. دوال البوت الأساسية ---
+# --- 4. دوال البوت الأساسية (بدون تغيير) ---
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
