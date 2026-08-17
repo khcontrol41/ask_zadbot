@@ -171,7 +171,6 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رسالة الترحيب (معدلة)"""
     welcome_text = """
 🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان»
 
@@ -210,7 +209,6 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['waiting_for_question'] = True
 
     elif text == "📚 الأسئلة الشائعة":
-        # ✅ النص الجديد للأسئلة الشائعة (رقم 14)
         faq_text = """
 أهلاً بكم.. نعمل حالياً على تحديث قسم الأسئلة الشائعة وستُتاح قريبا بإذن الله. وفي حال كان لديكم أي سؤال، يمكنكم التواصل مع المشرفين مباشرة بالضغط على (📩 سؤال جديد).
 """
@@ -226,7 +224,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question_text = update.message.text
 
     if not context.user_data.get('waiting_for_question'):
-        # ✅ النص الجديد (رقم 6)
         await update.message.reply_text(
             "❌ يُرجى استخدام الأيقونات الظاهرة أدناه لاختيار الخدمة المناسبة:\n\n"
             "☜  اضغط \"📩 سؤال جديد\" للتواصل المباشر مع مشرفي المقرأة وطرح سؤالك\n\n"
@@ -256,14 +253,12 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             await conn.close()
             
-        # ✅ النص الجديد (رقم 5)
         await update.message.reply_text(
             "✅ تم استلام استفسارك بنجاح! سيقوم أحد المشرفين بالرد عليه قريباً",
             reply_markup=MAIN_KEYBOARD
         )
         context.user_data['waiting_for_question'] = False
 
-        # إرسال إشعار للمشرفين
         for admin_id in ADMIN_IDS:
             try:
                 await context.bot.send_message(
@@ -281,7 +276,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ✅ النص الجديد (رقم 7)
     await update.message.reply_text(
         "❌ عذراً، هذا البوت يقبل النصوص الكتابية فقط.\n"
         "☜ اختر الخدمة المطلوبة من القائمة أدناه",
@@ -294,13 +288,11 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
     
-    # ✅ النص الجديد (رقم 10)
-    await update.message.reply_text("مرحباً بك. تم تسجيل دخولك كمشرف 🌿")
-    
+    # ✅ دمج الزر مع رسالة الترحيب (حذف النص الإضافي)
     mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"  # ⚠️ غيّر هذا الرابط
     keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
     await update.message.reply_text(
-        "يمكنك الآن فتح لوحة التحكم:",
+        "مرحباً بك. تم تسجيل دخولك كمشرف 🌿",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
