@@ -21,7 +21,28 @@ ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- 2. تهيئة Flask ---
+# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن بأمان (حل مشكلة Event Loop) ---
+def run_async(coro):
+    """
+    تقوم بتشغيل دالة غير متزامنة (coroutine) مع إدارة ذكية لحلقة الأحداث.
+    - إذا كانت هناك حلقة مفتوحة في الخيط الحالي، تستخدمها.
+    - إذا كانت الحلقة مغلقة، تقوم بإنشاء حلقة جديدة وتعيينها.
+    - لا تقوم بإغلاق الحلقة بعد التنفيذ (لإعادة استخدامها في الطلبات التالية).
+    """
+    try:
+        # محاولة الحصول على الحلقة الحالية في هذا الخيط
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("الحلقة مغلقة، سننشئ جديدة.")
+    except RuntimeError:
+        # إذا لم تكن هناك حلقة أو كانت مغلقة، ننشئ واحدة جديدة ونضبطها للخيط الحالي
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    # تشغيل الكوروتين باستخدام الحلقة الحالية (المفتوحة)
+    return loop.run_until_complete(coro)
+
+# --- 3. تهيئة Flask ---
 app = Flask(__name__)
 CORS(app)
 
@@ -39,7 +60,6 @@ def health():
 
 @app.route('/assign', methods=['POST'])
 def assign_question():
-    """تولي المشرف لهذا السؤال"""
     try:
         data = request.get_json()
         question_id = data.get('question_id')
@@ -62,7 +82,7 @@ def assign_question():
             finally:
                 await conn.close()
         
-        result = asyncio.run(assign_async())
+        result = run_async(assign_async())
         if result.get("error"):
             return jsonify(result), 400
         return jsonify(result), 200
@@ -73,7 +93,6 @@ def assign_question():
 
 @app.route('/unassign', methods=['POST'])
 def unassign_question():
-    """إلغاء تولي المشرف للسؤال (يعيده إلى حالة الانتظار)"""
     try:
         data = request.get_json()
         question_id = data.get('question_id')
@@ -85,7 +104,6 @@ def unassign_question():
         async def unassign_async():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # نسمح فقط للمشرف الذي تولى السؤال بإلغاء التولي
                 result = await conn.execute(
                     "UPDATE questions SET status = 'pending', assigned_to = NULL WHERE id = $1 AND assigned_to = $2 AND status = 'processing'",
                     question_id, admin_id
@@ -96,7 +114,7 @@ def unassign_question():
             finally:
                 await conn.close()
         
-        result = asyncio.run(unassign_async())
+        result = run_async(unassign_async())
         if result.get("error"):
             return jsonify(result), 400
         return jsonify(result), 200
@@ -128,7 +146,7 @@ def get_questions():
             finally:
                 await conn.close()
         
-        questions = asyncio.run(fetch_questions())
+        questions = run_async(fetch_questions())
         
         for q in questions:
             q['created_at'] = q['created_at'].isoformat() if q['created_at'] else None
@@ -169,7 +187,6 @@ def reply_question():
                 student_id = row['user_id']
                 assigned_to = row['assigned_to']
                 
-                # السماح بالرد إذا كان المشرف هو المعين أو إذا كان السؤال لا يزال معلقاً
                 if assigned_to and assigned_to != admin_id:
                     return {"error": "هذا السؤال يُعالج من قبل مشرف آخر"}
                 
@@ -194,7 +211,7 @@ def reply_question():
             finally:
                 await conn.close()
         
-        result = asyncio.run(update_and_send())
+        result = run_async(update_and_send())
         
         if result.get("error"):
             return jsonify(result), 400
@@ -225,7 +242,7 @@ def delete_answered():
             finally:
                 await conn.close()
         
-        result = asyncio.run(delete_answered_async())
+        result = run_async(delete_answered_async())
         return jsonify(result), 200
         
     except Exception as e:
