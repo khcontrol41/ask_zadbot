@@ -39,6 +39,7 @@ def health():
 
 @app.route('/assign', methods=['POST'])
 def assign_question():
+    """تولي المشرف لهذا السؤال (إسناد صريح)"""
     try:
         data = request.get_json()
         question_id = data.get('question_id')
@@ -61,7 +62,6 @@ def assign_question():
             finally:
                 await conn.close()
         
-        # ✅ استخدام asyncio.run() لحل مشكلة الحلقة
         result = asyncio.run(assign_async())
         if result.get("error"):
             return jsonify(result), 400
@@ -94,7 +94,6 @@ def get_questions():
             finally:
                 await conn.close()
         
-        # ✅ استخدام asyncio.run()
         questions = asyncio.run(fetch_questions())
         
         for q in questions:
@@ -136,6 +135,7 @@ def reply_question():
                 student_id = row['user_id']
                 assigned_to = row['assigned_to']
                 
+                # السماح بالرد إذا كان المشرف هو المعين أو إذا كان السؤال لا يزال معلقاً
                 if assigned_to and assigned_to != admin_id:
                     return {"error": "هذا السؤال يُعالج من قبل مشرف آخر"}
                 
@@ -160,7 +160,6 @@ def reply_question():
             finally:
                 await conn.close()
         
-        # ✅ استخدام asyncio.run()
         result = asyncio.run(update_and_send())
         
         if result.get("error"):
@@ -192,7 +191,6 @@ def delete_answered():
             finally:
                 await conn.close()
         
-        # ✅ استخدام asyncio.run()
         result = asyncio.run(delete_answered_async())
         return jsonify(result), 200
         
