@@ -25,7 +25,7 @@ AUTO_UNASSIGN_MINUTES = 15
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن بأمان ---
+# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن بأمان (خاص بـ Flask) ---
 def run_async(coro):
     try:
         loop = asyncio.get_event_loop()
@@ -129,21 +129,19 @@ def get_questions():
         async def fetch_questions():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # ✅ 1. إضافة الأعمدة إذا لم تكن موجودة
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
                 
-                # ✅ 2. إلغاء التولي التلقائي للأسئلة التي مضى عليها أكثر من 15 دقيقة
+                # ✅ إلغاء التولي التلقائي
                 await conn.execute(
-                    """
+                    f"""
                     UPDATE questions 
                     SET status = 'pending', assigned_to = NULL 
                     WHERE status = 'processing' 
-                    AND created_at < NOW() - INTERVAL '15 minutes'
+                    AND created_at < NOW() - INTERVAL '{AUTO_UNASSIGN_MINUTES} minutes'
                     """
                 )
                 
-                # ✅ 3. جلب جميع الأسئلة
                 rows = await conn.fetch("""
                     SELECT id, user_id, username, question, status, reply, assigned_to, created_at 
                     FROM questions 
@@ -395,7 +393,7 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "2. اضغط على اسمك أو صورتك الشخصية.\n"
                 "3. اختر 'Username' (اسم المستخدم).\n"
                 "4. اكتب اسماً فريداً (حروف وأرقام) واضغط حفظ.\n\n"
-                "🔹 *إذا واجهتك صعوبة، يرجى التواصل مع الدعم التقني:* @zad41"
+                "🔹 *إذا واجهتك صعوبة، يرجى التواصل مع الدعم التقني:* @zas41"
                 "📌 سيساعدك الفريق في إعداد معرفك ليتمكن المشرف من التواصل معك والرد على استفسارك.",
                 parse_mode="Markdown",
                 reply_markup=MAIN_KEYBOARD
@@ -505,29 +503,22 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# --- ✅ ميزة الإحصائيات (الأمر /stats) ---
+# --- ✅ ميزة الإحصائيات (الأمر /stats) - المُصححة ---
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
 
-    async def get_stats():
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            # اليوم (من منتصف الليلة الماضية)
-            today = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE created_at >= CURRENT_DATE")
-            # الأسبوع (آخر 7 أيام)
-            week = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'")
-            # المعلّق حالياً (pending + processing)
-            pending = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE status IN ('pending', 'processing')")
-            return today, week, pending
-        finally:
-            await conn.close()
+    # ✅ استخدام await مباشرة لأن الدالة غير متزامنة
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        today = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE created_at >= CURRENT_DATE")
+        week = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'")
+        pending = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE status IN ('pending', 'processing')")
+    finally:
+        await conn.close()
 
-    today, week, pending = run_async(get_stats())
-
-    # ✅ صياغة النص (كما طلبت)
     message = (
         "📊 *إحصائيات استفسارات المقرأة*\n\n"
         f"📅 *اليوم:* {today} استفسار\n"
