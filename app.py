@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import threading
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,6 +19,9 @@ if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
 ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
+
+# ✅ مدة إلغاء التولي التلقائي (بالدقائق)
+AUTO_UNASSIGN_MINUTES = 15
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -125,8 +129,21 @@ def get_questions():
         async def fetch_questions():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
+                # ✅ 1. إضافة الأعمدة إذا لم تكن موجودة
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
+                
+                # ✅ 2. إلغاء التولي التلقائي للأسئلة التي مضى عليها أكثر من 15 دقيقة
+                await conn.execute(
+                    """
+                    UPDATE questions 
+                    SET status = 'pending', assigned_to = NULL 
+                    WHERE status = 'processing' 
+                    AND created_at < NOW() - INTERVAL '15 minutes'
+                    """
+                )
+                
+                # ✅ 3. جلب جميع الأسئلة
                 rows = await conn.fetch("""
                     SELECT id, user_id, username, question, status, reply, assigned_to, created_at 
                     FROM questions 
@@ -369,9 +386,7 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     username = update.effective_user.username
 
     if text == "📩 سؤال جديد":
-        # ✅ التحقق من وجود معرف (Username)
         if not username or username == "":
-            # ❌ المستخدم ليس لديه معرف: نرسل رسالة التوجيه فوراً، ولا نفعّل حالة الانتظار
             await update.message.reply_text(
                 "⚠️ *تنبيه:* لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام (Username).\n\n"
                 "📌 *يرجى إعداد معرف خاص بك، ثم العودة وإرسال استفسارك.*\n\n"
@@ -385,11 +400,9 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode="Markdown",
                 reply_markup=MAIN_KEYBOARD
             )
-            # ❌ نمنع المتابعة: لا نفعّل waiting_for_question
             context.user_data['waiting_for_question'] = False
             return
 
-        # ✅ المستخدم لديه معرف: نسمح له بالكتابة
         await update.message.reply_text(
             "✍️ اكتب سؤالك الآن، وسنقوم بالرد عليه قريباً.",
             reply_markup=ReplyKeyboardRemove()
@@ -408,12 +421,10 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    username = update.effective_user.username  # سيصبح None إذا لم يكن هناك معرف
+    username = update.effective_user.username
     question_text = update.message.text
 
-    # ✅ التحقق من وجود معرف (لن يصل إلى هنا المستخدمون بدون معرف، لكن للاحتياط)
     if not is_admin(user_id) and (not username or username == ""):
-        # في حال وصول هنا (لن يحدث)، نرسل رسالة توجيه ونمنع الحفظ
         await update.message.reply_text(
             "⚠️ لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام.\n"
             "يرجى إعداد معرف في الإعدادات ثم العودة لإرسال استفسارك.",
@@ -421,7 +432,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ✅ التحقق من حالة الانتظار
     if not context.user_data.get('waiting_for_question'):
         await update.message.reply_text(
             "❌ يُرجى استخدام الأيقونات الظاهرة أدناه لاختيار الخدمة المناسبة:\n\n"
@@ -495,6 +505,38 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+# --- ✅ ميزة الإحصائيات (الأمر /stats) ---
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
+        return
+
+    async def get_stats():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            # اليوم (من منتصف الليلة الماضية)
+            today = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE created_at >= CURRENT_DATE")
+            # الأسبوع (آخر 7 أيام)
+            week = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'")
+            # المعلّق حالياً (pending + processing)
+            pending = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE status IN ('pending', 'processing')")
+            return today, week, pending
+        finally:
+            await conn.close()
+
+    today, week, pending = run_async(get_stats())
+
+    # ✅ صياغة النص (كما طلبت)
+    message = (
+        "📊 *إحصائيات استفسارات المقرأة*\n\n"
+        f"📅 *اليوم:* {today} استفسار\n"
+        f"📆 *الأسبوع:* {week} استفسار\n"
+        f"⏳ *المعلّق حالياً:* {pending} استفسار (بانتظار الرد)"
+    )
+
+    await update.message.reply_text(message, parse_mode="Markdown")
+
 # --- 5. تشغيل البوت ---
 def run_bot():
     global bot_app
@@ -503,6 +545,7 @@ def run_bot():
 
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("stats", stats_command))  # ✅ الأمر الجديد
     bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
