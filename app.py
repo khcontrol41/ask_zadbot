@@ -397,31 +397,21 @@ def get_audio_url():
         if not file_id:
             return jsonify({"error": "معرف الملف مطلوب"}), 400
 
-        async def fetch_url():
-            global bot_app
-            # انتظر حتى يصبح البوت جاهزاً (محاولة قصوى 5 ثوان)
-            for _ in range(5):
-                if bot_app and bot_app.bot:
-                    break
-                await asyncio.sleep(1)
-            if not bot_app or not bot_app.bot:
-                return {"error": "البوت لم يكتمل تشغيله بعد، حاول مجدداً"}
+        # استدعاء Bot API مباشرة للحصول على مسار الملف
+        import requests
+        url = f"https://api.telegram.org/bot{TOKEN}/getFile?file_id={file_id}"
+        response = requests.get(url)
+        if response.status_code != 200:
+            return jsonify({"error": "فشل الاتصال بـ Telegram API"}), 500
 
-            try:
-                file = await bot_app.bot.get_file(file_id)
-                file_path = file.file_path
-                # بناء الرابط الكامل
-                url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
-                logging.info(f"تم إنشاء رابط الصوت: {url}")
-                return {"url": url}
-            except Exception as e:
-                logging.error(f"خطأ في جلب رابط الملف: {e}")
-                return {"error": str(e)}
+        result = response.json()
+        if not result.get('ok'):
+            return jsonify({"error": result.get('description', 'خطأ غير معروف')}), 400
 
-        result = run_async(fetch_url())
-        if result.get("error"):
-            return jsonify(result), 400
-        return jsonify(result), 200
+        file_path = result['result']['file_path']
+        # بناء الرابط الكامل
+        audio_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+        return jsonify({"url": audio_url})
 
     except Exception as e:
         logging.error(f"خطأ في /get_audio_url: {e}")
