@@ -8,6 +8,7 @@ from flask_cors import CORS
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import asyncpg
+import tashmi_bot  # <-- أضف هذا السطر
 
 # --- 1. الإعدادات الأساسية ---
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -335,11 +336,141 @@ def delete_answered():
         logging.error(f"خطأ في حذف الأسئلة المجاب عليها: {e}")
         return jsonify({"error": str(e)}), 500
 
+# ===================== قسم التسميع (API) =====================
+
+@app.route('/tashmi/get', methods=['POST'])
+def get_tashmi():
+    try:
+        data = request.get_json()
+        admin_id = data.get('admin_id')
+        group = data.get('group', 'all')
+
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+
+        async def fetch_tashmi():
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                await conn.execute(
+                    f"""
+                    UPDATE tashmi_records 
+                    SET status = 'pending', assigned_to = NULL 
+                    WHERE status = 'processing' 
+                    AND created_at < NOW() - INTERVAL '{AUTO_UNASSIGN_MINUTES} minutes'
+                    """
+                )
+                if group == 'all':
+                    rows = await conn.fetch("""
+                        SELECT id, student_id, username, group_number, voice_file_id, 
+                               duration, status, teacher_note, assigned_to, created_at 
+                        FROM tashmi_records 
+                        ORDER BY created_at DESC
+                    """)
+                else:
+                    rows = await conn.fetch("""
+                        SELECT id, student_id, username, group_number, voice_file_id, 
+                               duration, status, teacher_note, assigned_to, created_at 
+                        FROM tashmi_records 
+                        WHERE group_number = $1
+                        ORDER BY created_at DESC
+                    """, group)
+                return [dict(row) for row in rows]
+            finally:
+                await conn.close()
+
+        records = run_async(fetch_tashmi())
+        for r in records:
+            r['created_at'] = r['created_at'].isoformat() if r['created_at'] else None
+        return jsonify(records), 200
+    except Exception as e:
+        logging.error(f"خطأ في جلب التسميعات: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/tashmi/assign', methods=['POST'])
+def assign_tashmi():
+    try:
+        data = request.get_json()
+        record_id = data.get('record_id')
+        admin_id = data.get('admin_id')
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+
+        async def assign_async():
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                result = await conn.execute(
+                    "UPDATE tashmi_records SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
+                    admin_id, record_id
+                )
+                if result == "UPDATE 0":
+                    return {"error": "التسميع ليس في حالة انتظار"}
+                return {"success": True}
+            finally:
+                await conn.close()
+
+        result = run_async(assign_async())
+        if result.get("error"):
+            return jsonify(result), 400
+        return jsonify(result), 200
+    except Exception as e:
+        logging.error(f"خطأ في تولي التسميع: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/tashmi/reply', methods=['POST'])
+def reply_tashmi():
+    try:
+        data = request.get_json()
+        record_id = data.get('record_id')
+        note_text = data.get('note_text')
+        admin_id = data.get('admin_id')
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+        if not record_id or not note_text:
+            return jsonify({"error": "بيانات ناقصة"}), 400
+
+        async def update_and_send():
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                row = await conn.fetchrow("SELECT student_id, assigned_to FROM tashmi_records WHERE id = $1", record_id)
+                if not row:
+                    return {"error": "التسميع غير موجود"}
+                student_id = row['student_id']
+                assigned_to = row['assigned_to']
+                if assigned_to and assigned_to != admin_id:
+                    return {"error": "يُعالج من قبل مشرف آخر"}
+
+                await conn.execute(
+                    "UPDATE tashmi_records SET teacher_note = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
+                    note_text, admin_id, record_id
+                )
+
+                global bot_app
+                if bot_app:
+                    await bot_app.bot.send_message(
+                        chat_id=student_id,
+                        text=f"🎙️ *ملاحظة المعلم على تسميعك:*\n\n{note_text}",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    return {"error": "البوت غير جاهز"}
+                return {"success": True}
+            finally:
+                await conn.close()
+
+        result = run_async(update_and_send())
+        if result.get("error"):
+            return jsonify(result), 400
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        logging.error(f"خطأ في إرسال ملاحظة التسميع: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # --- 4. دوال البوت الأساسية ---
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("📩 سؤال جديد"), KeyboardButton("📚 الأسئلة الشائعة")]
+        [KeyboardButton("📩 سؤال جديد"), KeyboardButton("🎙️ تسميع جديد")],
+        [KeyboardButton("📚 الأسئلة الشائعة")]
     ],
     resize_keyboard=True,
     one_time_keyboard=False
@@ -422,6 +553,11 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=MAIN_KEYBOARD
         )
         context.user_data['waiting_for_question'] = False
+
+    elif text == "🎙️ تسميع جديد":
+        # نستدعي الدالة الخاصة ببدء التسميع من الملف الجديد
+        from tashmi_bot import start_tashmi
+        await start_tashmi(update, context)
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -560,6 +696,8 @@ def run_bot():
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
+    # ➕ إضافة معالج التسميع
+    bot_app.add_handler(tashmi_bot.get_tashmi_handler())
     
     print("✅ البوت يعمل...")
     bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
