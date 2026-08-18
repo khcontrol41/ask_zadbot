@@ -8,7 +8,9 @@ from flask_cors import CORS
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import asyncpg
-import tashmi_bot  # <-- أضف هذا السطر
+
+# استيراد بوت التسميع
+import tashmi_bot
 
 # --- 1. الإعدادات الأساسية ---
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -518,6 +520,12 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     username = update.effective_user.username
 
+    # ✅ زر "تسميع جديد" - نبدأ عملية التسميع مباشرة
+    if text == "🎙️ تسميع جديد":
+        from tashmi_bot import start_tashmi
+        await start_tashmi(update, context)
+        return
+
     if text == "📩 سؤال جديد":
         if not username or username == "":
             await update.message.reply_text(
@@ -542,11 +550,6 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=ReplyKeyboardRemove()
         )
         context.user_data['waiting_for_question'] = True
-
-    elif text == "🎙️ تسميع جديد":
-        # نستدعي الدالة الخاصة ببدء التسميع من الملف الجديد
-        from tashmi_bot import start_tashmi
-        await start_tashmi(update, context)
 
     elif text == "📚 الأسئلة الشائعة":
         faq_text = """
@@ -695,10 +698,11 @@ def run_bot():
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
+    
     # ➕ إضافة معالج التسميع
     bot_app.add_handler(tashmi_bot.get_tashmi_handler())
     
-    print("✅ البوت يعمل...")
+    print("✅ البوت يعمل (استفسارات + تسميع)...")
     bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
 
 # --- 6. تشغيل Flask ---
