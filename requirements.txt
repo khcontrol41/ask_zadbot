@@ -2,3 +2,4 @@ python-telegram-bot==21.10
 asyncpg
 flask
 flask-cors
+requests
