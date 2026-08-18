@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import asyncpg
 
 # استيراد بوت التسميع
@@ -566,19 +566,16 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     question_text = update.message.text
 
+    # 🔥 الأهم: إذا كان المستخدم في حالة انتظار سؤال فقط نتعامل معه
+    if not context.user_data.get('waiting_for_question'):
+        # لا نرسل رسالة "يُرجى استخدام الأيقونات" هنا، بل نتركها تمر بدون رد
+        # حتى لا تتداخل مع محادثة التسميع
+        return
+
     if not is_admin(user_id) and (not username or username == ""):
         await update.message.reply_text(
             "⚠️ لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام.\n"
             "يرجى إعداد معرف في الإعدادات ثم العودة لإرسال استفسارك.",
-            reply_markup=MAIN_KEYBOARD
-        )
-        return
-
-    if not context.user_data.get('waiting_for_question'):
-        await update.message.reply_text(
-            "❌ يُرجى استخدام الأيقونات الظاهرة أدناه لاختيار الخدمة المناسبة:\n\n"
-            "☜  اضغط \"📩 سؤال جديد\" للتواصل المباشر مع مشرفي المقرأة وطرح سؤالك\n\n"
-            "☜ اضغط \"📚 الأسئلة الشائعة\" للاستفادة من أكثر ما يُطرح من استفسارات",
             reply_markup=MAIN_KEYBOARD
         )
         return
@@ -630,11 +627,8 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "❌ عذراً، هذا البوت يقبل النصوص الكتابية فقط.\n"
-        "☜ اختر الخدمة المطلوبة من القائمة أدناه",
-        reply_markup=MAIN_KEYBOARD
-    )
+    # تجاهل أي رسالة غير نصية (لن تظهر رسالة الخطأ)
+    pass
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -692,15 +686,23 @@ def run_bot():
     asyncio.set_event_loop(loop)
 
     bot_app = Application.builder().token(TOKEN).build()
+    
+    # ✅ أولاً: إضافة معالج التسميع (يأخذ الأولوية على النصوص العامة)
+    bot_app.add_handler(tashmi_bot.get_tashmi_handler())
+    
+    # ✅ ثانياً: معالج الأزرار الرئيسية
+    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|🎙️ تسميع جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
+    
+    # ✅ ثالثاً: معالج النصوص (الاستفسارات) مع شرط waiting_for_question
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
+    
+    # ✅ رابعاً: معالج للوسائط غير النصية (نتجاهلها)
+    bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
+    
+    # ✅ الأوامر
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("stats", stats_command))
-    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|🎙️ تسميع جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
-    bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
-    
-    # ➕ إضافة معالج التسميع
-    bot_app.add_handler(tashmi_bot.get_tashmi_handler())
     
     print("✅ البوت يعمل (استفسارات + تسميع)...")
     bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
