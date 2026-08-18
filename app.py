@@ -399,12 +399,20 @@ def get_audio_url():
 
         async def fetch_url():
             global bot_app
-            if not bot_app:
+            # انتظر حتى يصبح البوت جاهزاً (محاولة قصوى 5 ثوان)
+            for _ in range(5):
+                if bot_app and bot_app.bot:
+                    break
+                await asyncio.sleep(1)
+            if not bot_app or not bot_app.bot:
                 return {"error": "البوت لم يكتمل تشغيله بعد، حاول مجدداً"}
+
             try:
                 file = await bot_app.bot.get_file(file_id)
                 file_path = file.file_path
+                # بناء الرابط الكامل
                 url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+                logging.info(f"تم إنشاء رابط الصوت: {url}")
                 return {"url": url}
             except Exception as e:
                 logging.error(f"خطأ في جلب رابط الملف: {e}")
