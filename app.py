@@ -383,8 +383,43 @@ def reply_tashmi():
         logging.error(f"خطأ في إرسال ملاحظة التسميع: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 4. دوال البوت الأساسية ---
+# ========== الدالة المضافة (get_audio_url) ==========
+@app.route('/get_audio_url', methods=['POST'])
+def get_audio_url():
+    try:
+        data = request.get_json()
+        file_id = data.get('file_id')
+        admin_id = data.get('admin_id')
 
+        if admin_id not in ADMIN_IDS:
+            return jsonify({"error": "غير مصرح"}), 403
+
+        if not file_id:
+            return jsonify({"error": "معرف الملف مطلوب"}), 400
+
+        async def fetch_url():
+            global bot_app
+            if not bot_app:
+                return {"error": "البوت غير جاهز"}
+            try:
+                file = await bot_app.bot.get_file(file_id)
+                file_path = file.file_path
+                url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+                return {"url": url}
+            except Exception as e:
+                logging.error(f"خطأ في جلب رابط الملف: {e}")
+                return {"error": str(e)}
+
+        result = run_async(fetch_url())
+        if result.get("error"):
+            return jsonify(result), 400
+        return jsonify(result), 200
+
+    except Exception as e:
+        logging.error(f"خطأ في /get_audio_url: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ===================== قسم MAIN_KEYBOARD =====================
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("📩 سؤال جديد"), KeyboardButton("🎙️ تسميع جديد")],
