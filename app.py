@@ -9,7 +9,6 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardB
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import asyncpg
 
-# استيراد بوت التسميع
 import tashmi_bot
 
 # --- 1. الإعدادات الأساسية ---
@@ -228,89 +227,6 @@ def reply_question():
         logging.error(f"خطأ في الرد: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/bulk_reply', methods=['POST'])
-def bulk_reply():
-    try:
-        data = request.get_json()
-        question_ids = data.get('question_ids', [])
-        reply_text = data.get('reply_text')
-        admin_id = data.get('admin_id')
-        
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-            
-        if not question_ids or not reply_text:
-            return jsonify({"error": "بيانات ناقصة"}), 400
-
-        async def bulk_async():
-            conn = await asyncpg.connect(DATABASE_URL)
-            success_count = 0
-            failed_ids = []
-            failed_reasons = []
-            
-            try:
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
-                
-                for q_id in question_ids:
-                    try:
-                        row = await conn.fetchrow(
-                            "SELECT user_id, assigned_to, status FROM questions WHERE id = $1", 
-                            q_id
-                        )
-                        if not row:
-                            failed_ids.append(q_id)
-                            failed_reasons.append(f"السؤال {q_id} غير موجود")
-                            continue
-                        
-                        student_id = row['user_id']
-                        assigned_to = row['assigned_to']
-                        status = row['status']
-                        
-                        if status == 'pending' or (status == 'processing' and assigned_to == admin_id):
-                            await conn.execute(
-                                "UPDATE questions SET reply = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
-                                reply_text, admin_id, q_id
-                            )
-                            global bot_app
-                            if bot_app:
-                                try:
-                                    await bot_app.bot.send_message(
-                                        chat_id=student_id,
-                                        text=f"📩 *تم الرد على استفسارك:*\n\n{reply_text}",
-                                        parse_mode="Markdown"
-                                    )
-                                except Exception as e:
-                                    logging.error(f"فشل إرسال الرد للطالب {student_id}: {e}")
-                            
-                            success_count += 1
-                        else:
-                            failed_ids.append(q_id)
-                            failed_reasons.append(f"السؤال {q_id} غير متاح للرد (الحالة: {status})")
-                            
-                    except Exception as e:
-                        logging.error(f"خطأ في معالجة السؤال {q_id}: {e}")
-                        failed_ids.append(q_id)
-                        failed_reasons.append(f"خطأ تقني في السؤال {q_id}")
-                
-                return {
-                    "success": True,
-                    "sent": success_count,
-                    "failed": len(failed_ids),
-                    "failed_ids": failed_ids,
-                    "failed_reasons": failed_reasons
-                }
-                
-            finally:
-                await conn.close()
-        
-        result = run_async(bulk_async())
-        return jsonify(result), 200
-        
-    except Exception as e:
-        logging.error(f"خطأ في الرد الجماعي: {e}")
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/delete_answered', methods=['POST'])
 def delete_answered():
     try:
@@ -520,7 +436,6 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     username = update.effective_user.username
 
-    # زر "تسميع جديد" يُعالج بواسطة tashmi_bot، لذا نخرجه من هنا
     if text == "🎙️ تسميع جديد":
         return
 
@@ -564,7 +479,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     question_text = update.message.text
 
-    # فقط إذا كان الطالب في حالة انتظار سؤال
     if not context.user_data.get('waiting_for_question'):
         return
 
@@ -623,7 +537,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # تجاهل أي رسالة غير نصية (لا نعرض رسائل خطأ)
     pass
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -683,19 +596,10 @@ def run_bot():
 
     bot_app = Application.builder().token(TOKEN).build()
     
-    # ✅ أولاً: معالج التسميع (يأخذ الأولوية للأزرار والأوامر)
     bot_app.add_handler(tashmi_bot.get_tashmi_handler())
-    
-    # ✅ ثانياً: معالج الأزرار الرئيسية (باستثناء زر التسميع)
     bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
-    
-    # ✅ ثالثاً: معالج النصوص (الاستفسارات) مع شرط waiting_for_question
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
-    
-    # ✅ رابعاً: معالج للوسائط غير النصية (نتجاهلها)
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
-    
-    # ✅ الأوامر
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("stats", stats_command))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
