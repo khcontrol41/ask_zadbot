@@ -1,651 +1,556 @@
-import os
-import logging
-import asyncio
-import threading
-import requests  # تمت الإضافة
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-import asyncpg
-
-import tashmi_bot
-
-# --- 1. الإعدادات الأساسية ---
-TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-if not TOKEN:
-    raise ValueError("لم يتم تعيين متغير البيئة BOT_TOKEN")
-if not DATABASE_URL:
-    raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
-
-ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
-
-AUTO_UNASSIGN_MINUTES = 15
-
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-
-# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن بأمان (خاص بـ Flask) ---
-def run_async(coro):
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("الحلقة مغلقة، سننشئ جديدة.")
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
-
-# --- 3. تهيئة Flask ---
-app = Flask(__name__)
-CORS(app)
-
-bot_app = None
-
-@app.route('/')
-def home():
-    return "البوت يعمل! ✅"
-
-@app.route('/health')
-def health():
-    return "OK"
-
-# --- نقاط النهاية للواجهة (API) ---
-
-@app.route('/assign', methods=['POST'])
-def assign_question():
-    try:
-        data = request.get_json()
-        question_id = data.get('question_id')
-        admin_id = data.get('admin_id')
-        
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def assign_async():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
-                result = await conn.execute(
-                    "UPDATE questions SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
-                    admin_id, question_id
-                )
-                if result == "UPDATE 0":
-                    return {"error": "السؤال ليس في حالة انتظار أو تم إسناده بالفعل"}
-                return {"success": True}
-            finally:
-                await conn.close()
-        
-        result = run_async(assign_async())
-        if result.get("error"):
-            return jsonify(result), 400
-        return jsonify(result), 200
-        
-    except Exception as e:
-        logging.error(f"خطأ في إسناد السؤال: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/unassign', methods=['POST'])
-def unassign_question():
-    try:
-        data = request.get_json()
-        question_id = data.get('question_id')
-        admin_id = data.get('admin_id')
-        
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def unassign_async():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                result = await conn.execute(
-                    "UPDATE questions SET status = 'pending', assigned_to = NULL WHERE id = $1 AND assigned_to = $2 AND status = 'processing'",
-                    question_id, admin_id
-                )
-                if result == "UPDATE 0":
-                    return {"error": "السؤال ليس قيد المعالجة بواسطتك"}
-                return {"success": True}
-            finally:
-                await conn.close()
-        
-        result = run_async(unassign_async())
-        if result.get("error"):
-            return jsonify(result), 400
-        return jsonify(result), 200
-        
-    except Exception as e:
-        logging.error(f"خطأ في إلغاء التولي: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/get_questions', methods=['POST'])
-def get_questions():
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        
-        if user_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def fetch_questions():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
-                
-                await conn.execute(
-                    f"""
-                    UPDATE questions 
-                    SET status = 'pending', assigned_to = NULL 
-                    WHERE status = 'processing' 
-                    AND created_at < NOW() - INTERVAL '{AUTO_UNASSIGN_MINUTES} minutes'
-                    """
-                )
-                
-                rows = await conn.fetch("""
-                    SELECT id, user_id, username, question, status, reply, assigned_to, created_at 
-                    FROM questions 
-                    ORDER BY created_at DESC
-                """)
-                return [dict(row) for row in rows]
-            finally:
-                await conn.close()
-        
-        questions = run_async(fetch_questions())
-        
-        for q in questions:
-            q['created_at'] = q['created_at'].isoformat() if q['created_at'] else None
-            
-        return jsonify(questions), 200
-        
-    except Exception as e:
-        logging.error(f"خطأ في جلب الأسئلة: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/reply', methods=['POST'])
-def reply_question():
-    try:
-        data = request.get_json()
-        question_id = data.get('question_id')
-        reply_text = data.get('reply_text')
-        admin_id = data.get('admin_id')
-        
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-            
-        if not question_id or not reply_text:
-            return jsonify({"error": "بيانات ناقصة"}), 400
-            
-        async def update_and_send():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
-                
-                row = await conn.fetchrow(
-                    "SELECT user_id, assigned_to FROM questions WHERE id = $1", 
-                    question_id
-                )
-                if not row:
-                    return {"error": "السؤال غير موجود"}
-                
-                student_id = row['user_id']
-                assigned_to = row['assigned_to']
-                
-                if assigned_to and assigned_to != admin_id:
-                    return {"error": "هذا السؤال يُعالج من قبل مشرف آخر"}
-                
-                await conn.execute(
-                    "UPDATE questions SET reply = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
-                    reply_text, admin_id, question_id
-                )
-                
-                global bot_app
-                if bot_app:
-                    await bot_app.bot.send_message(
-                        chat_id=student_id,
-                        text=f"📩 *تم الرد على استفسارك:*\n\n{reply_text}",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    logging.error("البوت ليس جاهزاً لإرسال الرسائل")
-                    return {"error": "البوت غير جاهز"}
-                
-                return {"success": True}
-                
-            finally:
-                await conn.close()
-        
-        result = run_async(update_and_send())
-        
-        if result.get("error"):
-            return jsonify(result), 400
-            
-        return jsonify({"success": True}), 200
-        
-    except Exception as e:
-        logging.error(f"خطأ في الرد: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/delete_answered', methods=['POST'])
-def delete_answered():
-    try:
-        data = request.get_json()
-        admin_id = data.get('admin_id')
-        
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-            
-        async def delete_answered_async():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                result = await conn.execute("DELETE FROM questions WHERE status = 'answered'")
-                import re
-                match = re.search(r'DELETE (\d+)', result)
-                count = int(match.group(1)) if match else 0
-                return {"success": True, "deleted": count}
-            finally:
-                await conn.close()
-        
-        result = run_async(delete_answered_async())
-        return jsonify(result), 200
-        
-    except Exception as e:
-        logging.error(f"خطأ في حذف الأسئلة المجاب عليها: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# ===================== قسم التسميع (API) =====================
-
-@app.route('/tashmi/get', methods=['POST'])
-def get_tashmi():
-    try:
-        data = request.get_json()
-        admin_id = data.get('admin_id')
-        group = data.get('group', 'all')
-
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def fetch_tashmi():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                await conn.execute(
-                    f"""
-                    UPDATE tashmi_records 
-                    SET status = 'pending', assigned_to = NULL 
-                    WHERE status = 'processing' 
-                    AND created_at < NOW() - INTERVAL '{AUTO_UNASSIGN_MINUTES} minutes'
-                    """
-                )
-                if group == 'all':
-                    rows = await conn.fetch("""
-                        SELECT id, student_id, username, group_number, voice_file_id, 
-                               duration, status, teacher_note, assigned_to, created_at 
-                        FROM tashmi_records 
-                        ORDER BY created_at DESC
-                    """)
-                else:
-                    rows = await conn.fetch("""
-                        SELECT id, student_id, username, group_number, voice_file_id, 
-                               duration, status, teacher_note, assigned_to, created_at 
-                        FROM tashmi_records 
-                        WHERE group_number = $1
-                        ORDER BY created_at DESC
-                    """, group)
-                return [dict(row) for row in rows]
-            finally:
-                await conn.close()
-
-        records = run_async(fetch_tashmi())
-        for r in records:
-            r['created_at'] = r['created_at'].isoformat() if r['created_at'] else None
-        return jsonify(records), 200
-    except Exception as e:
-        logging.error(f"خطأ في جلب التسميعات: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/tashmi/assign', methods=['POST'])
-def assign_tashmi():
-    try:
-        data = request.get_json()
-        record_id = data.get('record_id')
-        admin_id = data.get('admin_id')
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def assign_async():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                result = await conn.execute(
-                    "UPDATE tashmi_records SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
-                    admin_id, record_id
-                )
-                if result == "UPDATE 0":
-                    return {"error": "التسميع ليس في حالة انتظار"}
-                return {"success": True}
-            finally:
-                await conn.close()
-
-        result = run_async(assign_async())
-        if result.get("error"):
-            return jsonify(result), 400
-        return jsonify(result), 200
-    except Exception as e:
-        logging.error(f"خطأ في تولي التسميع: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/tashmi/reply', methods=['POST'])
-def reply_tashmi():
-    try:
-        data = request.get_json()
-        record_id = data.get('record_id')
-        note_text = data.get('note_text')
-        admin_id = data.get('admin_id')
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-        if not record_id or not note_text:
-            return jsonify({"error": "بيانات ناقصة"}), 400
-
-        async def update_and_send():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                row = await conn.fetchrow("SELECT student_id, assigned_to FROM tashmi_records WHERE id = $1", record_id)
-                if not row:
-                    return {"error": "التسميع غير موجود"}
-                student_id = row['student_id']
-                assigned_to = row['assigned_to']
-                if assigned_to and assigned_to != admin_id:
-                    return {"error": "يُعالج من قبل مشرف آخر"}
-
-                await conn.execute(
-                    "UPDATE tashmi_records SET teacher_note = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
-                    note_text, admin_id, record_id
-                )
-
-                global bot_app
-                if bot_app:
-                    await bot_app.bot.send_message(
-                        chat_id=student_id,
-                        text=f"🎙️ *ملاحظة المعلم على تسميعك:*\n\n{note_text}",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    return {"error": "البوت غير جاهز"}
-                return {"success": True}
-            finally:
-                await conn.close()
-
-        result = run_async(update_and_send())
-        if result.get("error"):
-            return jsonify(result), 400
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        logging.error(f"خطأ في إرسال ملاحظة التسميع: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# ========== الدالة المضافة (get_audio_url) ==========
-@app.route('/get_audio_url', methods=['POST'])
-def get_audio_url():
-    try:
-        data = request.get_json()
-        file_id = data.get('file_id')
-        admin_id = data.get('admin_id')
-
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        if not file_id:
-            return jsonify({"error": "معرف الملف مطلوب"}), 400
-
-        # الاتصال المباشر بـ Telegram Bot API
-        url = f"https://api.telegram.org/bot{TOKEN}/getFile?file_id={file_id}"
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code != 200:
-            return jsonify({"error": "فشل الاتصال بـ Telegram API"}), 500
-
-        result = response.json()
-        if not result.get('ok'):
-            return jsonify({"error": result.get('description', 'خطأ غير معروف')}), 400
-
-        file_path = result['result']['file_path']
-        audio_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
-        
-        logging.info(f"تم إنشاء رابط الصوت بنجاح: {audio_url}")
-        return jsonify({"url": audio_url})
-
-    except Exception as e:
-        logging.error(f"خطأ في /get_audio_url: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# ===================== قسم MAIN_KEYBOARD =====================
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton("📩 سؤال جديد"), KeyboardButton("🎙️ تسميع جديد")],
-        [KeyboardButton("📚 الأسئلة الشائعة")]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False
-)
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-def get_admin_panel_keyboard():
-    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"  # ⚠️ غيّر هذا الرابط
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]
-    ])
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = """
-🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان»
-
-​يسرّنا انضمامكم إلينا، ونسأل الله تعالى أن يوفقنا لخدمتكم وأن نكون عونًا لكم في رحلتكم.
-​"يبدأ الطريق بخطوة، وتُقطف ثماره بختمة.. فابدأ مسيرتك، ونحن معك حتى تذوق حلاوة الختمة."
-
-​🫧 الخدمات المتاحة عبر البوت:
-صُمِّم هذا البوت للإجابة عن كافة استفساراتكم حول المقرأة، وتسهيل وصولكم إلى المعلومات التي تحتاجونها بكل يسر، بما في ذلك:
-
-​📚 البرامج والمسارات التعليمية
-​🗓️ مواعيد الحلقات واللقاءات
-​📝 إجراءات التسجيل وضوابط الدراسة
-​📖 اللوائح التنظيمية وآلية المتابعة
-​💬 الاستفسارات العامة والخدمات الإدارية
-
-📌 يرجى تحديد الخيار المناسب من الأيقونات:
-
-​📚 الأسئلة الشائعة — للاطلاع على الإرشادات والإجابات المعتمدة.
-​📩 سؤال جديد — للتواصل المباشر مع الكادر الإشرافي بالمقرأة.
-
-​🌱 «لا تتردد في السؤال، فوضوح الطريق يُعين على حسن المسير»
-"""
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=MAIN_KEYBOARD
-    )
-
-async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    user_id = update.effective_user.id
-    username = update.effective_user.username
-
-    if text == "🎙️ تسميع جديد":
-        return
-
-    if text == "📩 سؤال جديد":
-        if not username or username == "":
-            await update.message.reply_text(
-                "⚠️ *تنبيه:* يلزم وجود معرّف عام (اسم مستخدم) في حسابك لتتمكن من التواصل مع المشرفين\n\n"
-                "📌 *يرجى إعداد معرف خاص بك، ثم العودة وإرسال استفسارك.*\n\n"
-                "📝 *كيفية إنشاء اسم المستخدم في تيليجرام؟*\n"
-                "1. من تيليجرام، افتح الإعدادات.\n"
-                "2. اختر حسابي.\n"
-                "3. اضغط إضافة اسم مستخدم.\n"
-                "4. اكتب المعرّف الذي تريده باللغة الإنجليزية، بشرط ألا يقل عن 5 خانات.\n"
-                "5. اضغط علامة (✔️) لإتمام الحفظ.\n\n"
-                "⭕ *تنبيه:* إذا كان الاسم مستخدمًا من قبل، جرّب اسمًا آخر حتى يظهر لك أنه متاح.\n\n"
-                "📲 *في حال واجهت أي صعوبة في ضبط المعرّف من الإعدادات، يسعدنا تواصلك مع الدعم التقني (@zad41) لنستطيع مساعدتك خطوة بخطوة حتى تتمكن من إعداد المعرّف واستخدام البوت*",
-                parse_mode="Markdown",
-                reply_markup=MAIN_KEYBOARD
-            )
-            context.user_data['waiting_for_question'] = False
-            return
-
-        await update.message.reply_text(
-            "✍️ اكتب سؤالك الآن، وسنقوم بالرد عليه قريباً.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        context.user_data['waiting_for_question'] = True
-
-    elif text == "📚 الأسئلة الشائعة":
-        faq_text = """
-أهلاً بكم.. نعمل حالياً على تحديث قسم الأسئلة الشائعة وستُتاح قريبا بإذن الله. وفي حال كان لديكم أي سؤال، يمكنكم التواصل مع المشرفين مباشرة بالضغط على (📩 سؤال جديد).
-"""
-        await update.message.reply_text(
-            faq_text,
-            reply_markup=MAIN_KEYBOARD
-        )
-        context.user_data['waiting_for_question'] = False
-
-async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username
-    question_text = update.message.text
-
-    if not context.user_data.get('waiting_for_question'):
-        return
-
-    if not is_admin(user_id) and (not username or username == ""):
-        await update.message.reply_text(
-            "⚠️ لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام.\n"
-            "يرجى إعداد معرف في الإعدادات ثم العودة لإرسال استفسارك.",
-            reply_markup=MAIN_KEYBOARD
-        )
-        return
-
-    try:
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS questions (
-                    id SERIAL PRIMARY KEY, 
-                    user_id BIGINT, 
-                    username TEXT, 
-                    question TEXT, 
-                    status TEXT DEFAULT 'pending', 
-                    reply TEXT,
-                    assigned_to BIGINT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await conn.execute(
-                "INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)",
-                user_id, username or "مجهول", question_text
-            )
-        finally:
-            await conn.close()
-            
-        await update.message.reply_text(
-            "✅ تم استلام استفسارك بنجاح! سيقوم أحد المشرفين بالرد عليه قريباً",
-            reply_markup=MAIN_KEYBOARD
-        )
-        context.user_data['waiting_for_question'] = False
-
-        keyboard = get_admin_panel_keyboard()
-        for admin_id in ADMIN_IDS:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text="📩 هناك استفسار جديد في لوحة التحكم.",
-                    reply_markup=keyboard
-                )
-            except Exception as e:
-                logging.error(f"فشل إرسال الإشعار للمشرف {admin_id}: {e}")
-
-    except Exception as e:
-        logging.error(f"خطأ في حفظ السؤال: {e}")
-        await update.message.reply_text(
-            "❌ حدث خطأ تقني، حاول مرة أخرى لاحقًا.",
-            reply_markup=MAIN_KEYBOARD
-        )
-
-async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
-        return
-    
-    keyboard = get_admin_panel_keyboard()
-    await update.message.reply_text(
-        "مرحباً بك. تم تسجيل دخولك كمشرف 🌿",
-        reply_markup=keyboard
-    )
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
-        return
-
-    conn = await asyncpg.connect(DATABASE_URL)
-    try:
-        pending_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM questions WHERE status IN ('pending', 'processing')"
-        )
-        oldest = await conn.fetchval(
-            "SELECT created_at FROM questions WHERE status IN ('pending', 'processing') ORDER BY created_at ASC LIMIT 1"
-        )
-    finally:
-        await conn.close()
-
-    if oldest:
-        now = datetime.now()
-        delta = now - oldest.replace(tzinfo=None)
-        hours = int(delta.total_seconds() // 3600)
-        minutes = int((delta.total_seconds() % 3600) // 60)
-        if hours > 0:
-            time_str = f"{hours} ساعة و {minutes} دقيقة"
-        else:
-            time_str = f"{minutes} دقيقة"
-    else:
-        time_str = "لا يوجد أسئلة معلّقة"
-
-    message = (
-        "📊 *إحصائيات استفسارات المقرأة*\n\n"
-        f"⏳ *الأسئلة المعلّقة (غير المجاب عليها):* {pending_count}\n"
-        f"🕐 *أقدم سؤال معلّق منذ:* {time_str}"
-    )
-
-    await update.message.reply_text(message, parse_mode="Markdown")
-
-# --- 5. تشغيل البوت ---
-def run_bot():
-    global bot_app
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    bot_app = Application.builder().token(TOKEN).build()
-    
-    bot_app.add_handler(tashmi_bot.get_tashmi_handler())
-    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
-    bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("stats", stats_command))
-    bot_app.add_handler(CommandHandler("admin", admin_panel))
-    
-    print("✅ البوت يعمل (استفسارات + تسميع)...")
-    bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
-
-# --- 6. تشغيل Flask ---
-if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.start()
-    
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة المقرأة - استفسارات وتسميع</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        /* --- الأنماط العامة --- */
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 15px; background: #f4f7fa; }
+        .container { max-width: 700px; margin: auto; }
+        .card { background: white; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-right: 5px solid #f39c12; }
+        .card.tashmi-card { border-right-color: #9b59b6; }
+        .card.answered { border-right-color: #27ae60; }
+        .card.processing { border-right-color: #3498db; opacity: 0.9; }
+        h1 { color: #2c3e50; font-size: 22px; margin: 0; }
+        .user { font-weight: bold; color: #2980b9; }
+        .user a { color: #2980b9; text-decoration: none; }
+        .user a:hover { text-decoration: underline; }
+        .question { margin: 10px 0; background: #ecf0f1; padding: 10px; border-radius: 8px; }
+        .reply-area { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; margin: 5px 0; font-family: inherit; }
+        .reply-area:disabled { background: #ecf0f1; color: #7f8c8d; cursor: not-allowed; }
+        .send-btn { background: #0088cc; color: white; border: none; padding: 10px 20px; border-radius: 8px; width: 100%; font-size: 16px; cursor: pointer; margin-top: 5px; }
+        .send-btn:disabled { background: #95a5a6; cursor: not-allowed; }
+        .assign-btn { background: #f39c12; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+        .assign-btn:disabled { background: #95a5a6; cursor: not-allowed; }
+        .unassign-btn { background: #e67e22; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+        .unassign-btn:disabled { background: #95a5a6; cursor: not-allowed; }
+        .pending-badge { background: #f39c12; color: white; padding: 2px 10px; border-radius: 20px; font-size: 12px; display: inline-block; }
+        .answered-badge { background: #27ae60; color: white; padding: 2px 10px; border-radius: 20px; font-size: 12px; display: inline-block; }
+        .processing-badge { background: #3498db; color: white; padding: 2px 10px; border-radius: 20px; font-size: 12px; display: inline-block; }
+        .tashmi-badge { background: #9b59b6; color: white; padding: 2px 10px; border-radius: 20px; font-size: 12px; display: inline-block; }
+        .reply-text { background: #d5f5e3; padding: 10px; border-radius: 8px; color: #1e8449; margin-top: 10px; }
+        .processing-text { background: #d6eaf8; padding: 10px; border-radius: 8px; color: #1a5276; margin-top: 10px; text-align: center; }
+        .loader { text-align: center; color: #7f8c8d; padding: 20px; }
+        .error { color: red; text-align: center; }
+        .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 5px 0; }
+
+        /* --- تبويبات التنقل --- */
+        .tabs { display: flex; gap: 5px; margin-bottom: 20px; background: #ecf0f1; border-radius: 12px; padding: 5px; }
+        .tab-btn { flex: 1; padding: 10px; border: none; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; background: transparent; color: #7f8c8d; transition: 0.3s; }
+        .tab-btn.active { background: white; color: #2c3e50; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .tab-btn:hover { background: rgba(255,255,255,0.5); }
+
+        /* --- شريط المجموعات (Tashmi) --- */
+        .groups-scroll {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow-x: auto;
+            padding: 5px 0 15px 0;
+            white-space: nowrap;
+            scrollbar-width: thin;
+            border-bottom: 1px solid #eee;
+            margin-bottom: 15px;
+            flex-wrap: nowrap;
+        }
+        .group-tab {
+            flex: 0 0 auto;
+            background: #ecf0f1;
+            color: #2c3e50;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 30px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: 500;
+        }
+        .group-tab.active {
+            background: #2c3e50;
+            color: white;
+            box-shadow: 0 2px 8px rgba(44,62,80,0.3);
+        }
+        .group-tab .badge {
+            background: #e74c3c;
+            color: white;
+            padding: 0 8px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        .group-tab.active .badge { background: rgba(255,255,255,0.3); color: white; }
+        .group-tab .badge.zero { background: #bdc3c7; color: #7f8c8d; }
+
+        /* --- مشغل الصوت مع أزرار السرعة --- */
+        .audio-player-wrapper { margin: 10px 0; background: #f8f9fa; padding: 12px; border-radius: 10px; }
+        .audio-player-wrapper audio { width: 100%; outline: none; }
+        .speed-btns { display: flex; gap: 5px; margin-top: 8px; flex-wrap: wrap; }
+        .speed-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 4px 14px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+        .speed-btn:hover { background: #2980b9; transform: scale(1.05); }
+        .speed-btn.active-speed { background: #e67e22; box-shadow: 0 2px 6px rgba(230,126,34,0.4); }
+
+        /* --- النوافذ المنبثقة والإحصائيات --- */
+        .header-actions { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
+        .header-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .refresh-btn { background: #2ecc71; color: white; border: none; padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+        .refresh-btn:disabled { background: #95a5a6; }
+        .delete-btn { background: #e74c3c; color: white; border: none; padding: 8px 15px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+        .delete-btn:disabled { background: #95a5a6; }
+        .stats-bar { background: #ecf0f1; border-radius: 10px; padding: 10px 15px; margin-bottom: 15px; display: flex; justify-content: space-around; text-align: center; font-size: 14px; flex-wrap: wrap; gap: 5px; }
+        .stats-bar span { font-weight: bold; }
+        .stats-pending { color: #f39c12; }
+        .stats-processing { color: #3498db; }
+        .stats-answered { color: #27ae60; }
+        .stats-total { color: #2980b9; }
+        .stats-tashmi-pending { color: #9b59b6; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header-actions">
+        <div class="header-left"><h1>📋 لوحة المقرأة</h1></div>
+        <div class="header-right">
+            <button class="refresh-btn" id="refreshBtn" onclick="loadCurrentTab()">🔄 تحديث</button>
+            <button class="delete-btn" id="deleteBtn" onclick="deleteAnswered()">🗑️ حذف الأسئلة التي تم الرد عليها</button>
+        </div>
+    </div>
+
+    <!-- تبويبات التنقل -->
+    <div class="tabs">
+        <button class="tab-btn active" id="tabAsk" onclick="switchTab('ask')">📩 الاستفسارات</button>
+        <button class="tab-btn" id="tabTashmi" onclick="switchTab('tashmi')">🎙️ التسميع</button>
+    </div>
+
+    <!-- ===== تبويب الاستفسارات ===== -->
+    <div id="ask-tab">
+        <div class="stats-bar">
+            <div>⏳ في الانتظار: <span class="stats-pending" id="pendingCount">0</span></div>
+            <div>🔄 قيد المعالجة: <span class="stats-processing" id="processingCount">0</span></div>
+            <div>✅ تم الرد: <span class="stats-answered" id="answeredCount">0</span></div>
+            <div>📊 المجموع: <span class="stats-total" id="totalCount">0</span></div>
+        </div>
+        <div id="questions-container"><div class="loader">⏳ جاري التحميل...</div></div>
+    </div>
+
+    <!-- ===== تبويب التسميع ===== -->
+    <div id="tashmi-tab" style="display: none;">
+        <!-- شريط المجموعات -->
+        <div class="groups-scroll" id="groupsContainer">
+            <!-- سيتم توليد الأزرار بواسطة JavaScript -->
+        </div>
+        <div class="stats-bar">
+            <div>⏳ معلق: <span class="stats-tashmi-pending" id="tashmiPendingCount">0</span></div>
+            <div>📊 المجموع: <span class="stats-total" id="tashmiTotalCount">0</span></div>
+        </div>
+        <div id="tashmi-container"><div class="loader">⏳ جاري تحميل التسميعات...</div></div>
+    </div>
+</div>
+
+<script>
+    const user = window.Telegram.WebApp.initDataUnsafe.user;
+    const adminId = user ? user.id : null;
+    const BASE_URL = "https://ask-zadbot.onrender.com"; // غيّره حسب رابط خادمك
+
+    let currentQuestions = [];
+    let currentTashmiRecords = [];
+    let currentGroup = 'all';
+
+    // ======================= دوال التبويب =======================
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        if (tab === 'ask') {
+            document.getElementById('tabAsk').classList.add('active');
+            document.getElementById('ask-tab').style.display = 'block';
+            document.getElementById('tashmi-tab').style.display = 'none';
+            loadQuestions();
+        } else {
+            document.getElementById('tabTashmi').classList.add('active');
+            document.getElementById('ask-tab').style.display = 'none';
+            document.getElementById('tashmi-tab').style.display = 'block';
+            loadTashmiGroups();
+        }
+    }
+
+    function loadCurrentTab() {
+        if (document.getElementById('ask-tab').style.display !== 'none') loadQuestions();
+        else loadTashmiGroups();
+    }
+
+    // ======================= دوال الاستفسارات =======================
+    function formatUsername(username) {
+        if (!username || username === "مجهول") return '👤 مجهول';
+        return `👤 <a href="https://t.me/${username}" target="_blank">${username}</a>`;
+    }
+
+    // ========== تحميل الاستفسارات مع مهلة ==========
+    async function loadQuestions() {
+        const container = document.getElementById('questions-container');
+        const refreshBtn = document.getElementById('refreshBtn');
+        refreshBtn.disabled = true;
+        container.innerHTML = '<div class="loader">⏳ جاري التحميل...</div>';
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 ثانية مهلة
+            const res = await fetch(`${BASE_URL}/get_questions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: adminId }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            if (!res.ok) throw new Error((await res.json()).error || 'فشل');
+            const data = await res.json();
+            currentQuestions = data;
+            // تحديث الإحصائيات
+            document.getElementById('pendingCount').textContent = data.filter(q => q.status === 'pending').length;
+            document.getElementById('processingCount').textContent = data.filter(q => q.status === 'processing').length;
+            document.getElementById('answeredCount').textContent = data.filter(q => q.status === 'answered').length;
+            document.getElementById('totalCount').textContent = data.length;
+            if (data.length === 0) {
+                container.innerHTML = '<div class="loader" style="color:#27ae60;">✨ لا توجد استفسارات</div>';
+                refreshBtn.disabled = false;
+                return;
+            }
+            let html = '';
+            for (const q of data) {
+                const isAnswered = q.status === 'answered';
+                const isProcessing = q.status === 'processing';
+                const isAssignedToMe = isProcessing && q.assigned_to == adminId;
+                const isAssignedToOther = isProcessing && !isAssignedToMe;
+                let badge = '', cardClass = '', contentHtml = '';
+                if (isAnswered) {
+                    badge = '<span class="answered-badge">✅ تم الرد</span>';
+                    cardClass = 'answered';
+                    contentHtml = `<div class="reply-text"><strong>الرد:</strong> ${q.reply || ''}</div>`;
+                } else if (isAssignedToOther) {
+                    badge = '<span class="processing-badge">🔄 قيد المعالجة</span>';
+                    cardClass = 'processing';
+                    contentHtml = `<div class="processing-text">⏳ يُعالج من قبل مشرف آخر.</div>`;
+                } else {
+                    const isMyProcessing = isProcessing && isAssignedToMe;
+                    badge = isMyProcessing ? '<span class="processing-badge">🔄 أنت تعالج</span>' : '<span class="pending-badge">⏳ في الانتظار</span>';
+                    let actionsHtml = isMyProcessing ?
+                        `<button class="unassign-btn" onclick="unassignQuestion(${q.id})">↩️ إلغاء التولي</button>` :
+                        `<button class="assign-btn" onclick="assignQuestion(${q.id})">🔄 تولي الرد</button>`;
+                    contentHtml = `
+                        <div class="actions">${actionsHtml}</div>
+                        <textarea class="reply-area" placeholder="اكتب ردك..." id="reply-${q.id}" ${isMyProcessing ? '' : 'disabled'}></textarea>
+                        <button class="send-btn" onclick="sendReply(${q.id})" ${isMyProcessing ? '' : 'disabled'}>📤 إرسال الرد</button>
+                    `;
+                }
+                html += `<div class="card ${cardClass}" data-id="${q.id}">${badge}<div class="user">${formatUsername(q.username)}</div><div class="question">"${q.question}"</div>${contentHtml}<div style="font-size:12px;color:#95a5a6;margin-top:5px;">📅 ${q.created_at || ''}</div></div>`;
+            }
+            container.innerHTML = html;
+        } catch(e) {
+            if (e.name === 'AbortError') {
+                container.innerHTML = '<div class="error">⏱️ انتهت المهلة، حاول تحديث الصفحة</div>';
+            } else {
+                container.innerHTML = `<div class="error">❌ خطأ: ${e.message}</div>`;
+            }
+        }
+        finally { refreshBtn.disabled = false; }
+    }
+
+    // ========== تحميل التسميعات مع مهلة وبدون تحميل الصوتيات فوراً ==========
+    async function loadTashmiGroups() {
+        const container = document.getElementById('tashmi-container');
+        const refreshBtn = document.getElementById('refreshBtn');
+        refreshBtn.disabled = true;
+        container.innerHTML = '<div class="loader">⏳ جاري التحميل...</div>';
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const res = await fetch(`${BASE_URL}/tashmi/get`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ admin_id: adminId, group: 'all' }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            if (!res.ok) throw new Error((await res.json()).error || 'فشل');
+            const data = await res.json();
+            currentTashmiRecords = data;
+            const pendingAll = data.filter(r => r.status === 'pending').length;
+            document.getElementById('tashmiPendingCount').textContent = pendingAll;
+            document.getElementById('tashmiTotalCount').textContent = data.length;
+            // بناء أزرار المجموعات
+            const groups = new Set(data.map(r => r.group_number).filter(Boolean));
+            const groupsContainer = document.getElementById('groupsContainer');
+            let groupsHtml = `<button class="group-tab active" data-group="all" onclick="switchGroup('all')">📋 الكل <span class="badge ${pendingAll === 0 ? 'zero' : ''}">${pendingAll}</span></button>`;
+            const sortedGroups = Array.from(groups).sort((a,b) => Number(a) - Number(b));
+            sortedGroups.forEach(g => {
+                const count = data.filter(r => r.group_number === g && r.status === 'pending').length;
+                groupsHtml += `<button class="group-tab" data-group="${g}" onclick="switchGroup('${g}')">🎯 مجموعة ${g} <span class="badge ${count === 0 ? 'zero' : ''}">${count}</span></button>`;
+            });
+            groupsContainer.innerHTML = groupsHtml;
+            // عرض التسميعات بدون تحميل الصوتيات (سيتم تحميلها عند الضغط على زر التشغيل)
+            await renderTashmiRecordsLazy(data.filter(r => r.group_number === currentGroup || currentGroup === 'all'));
+        } catch(e) {
+            if (e.name === 'AbortError') {
+                container.innerHTML = '<div class="error">⏱️ انتهت المهلة، حاول تحديث الصفحة</div>';
+            } else {
+                container.innerHTML = `<div class="error">❌ ${e.message}</div>`;
+            }
+        }
+        finally { refreshBtn.disabled = false; }
+    }
+
+    // ========== دالة عرض التسميعات بدون تحميل الصوتيات مسبقاً ==========
+    async function renderTashmiRecordsLazy(records) {
+        const container = document.getElementById('tashmi-container');
+        if (records.length === 0) {
+            container.innerHTML = '<div class="loader" style="color:#27ae60;">🎙️ لا توجد تسميعات في هذه المجموعة</div>';
+            return;
+        }
+        let html = '';
+        for (const r of records) {
+            const isAnswered = r.status === 'answered';
+            const isProcessing = r.status === 'processing';
+            const isAssignedToMe = isProcessing && r.assigned_to == adminId;
+            const isAssignedToOther = isProcessing && !isAssignedToMe;
+            let badge = '', cardClass = 'tashmi-card', contentHtml = '';
+
+            if (isAnswered) { badge = '<span class="answered-badge">✅ تم الرد</span>'; contentHtml = `<div class="reply-text"><strong>ملاحظة المعلم:</strong> ${r.teacher_note || ''}</div>`; }
+            else if (isAssignedToOther) { badge = '<span class="processing-badge">🔄 قيد المعالجة</span>'; contentHtml = `<div class="processing-text">⏳ يُعالج من قبل مشرف آخر.</div>`; }
+            else {
+                const isMyProcessing = isProcessing && isAssignedToMe;
+                badge = isMyProcessing ? '<span class="processing-badge">🔄 أنت تعالج</span>' : '<span class="tashmi-badge">⏳ في الانتظار</span>';
+                const audioId = `audio-${r.id}`;
+                // لا نطلب الرابط الآن، نضعه فارغاً ونحمله عند الضغط على زر التشغيل
+                const durationText = (r.duration && r.duration > 0) ? `⏱️ ${Math.floor(r.duration/60)}:${(r.duration%60).toString().padStart(2,'0')}` : '⏱️ المدة غير معروفة';
+                contentHtml = `
+                    <div class="audio-player-wrapper">
+                        <audio controls preload="none" id="${audioId}">
+                            <source src="" type="audio/mp4">
+                            المتصفح لا يدعم تشغيل الصوت.
+                        </audio>
+                        <div style="font-size:12px;color:#7f8c8d;margin-top:4px;">${durationText}</div>
+                        <button class="speed-btn" style="background:#2ecc71;color:white;border:none;padding:4px 12px;border-radius:12px;cursor:pointer;margin-top:4px;" onclick="loadAudio('${audioId}', '${r.voice_file_id}')">▶️ تحميل الصوت</button>
+                        <div class="speed-btns" style="margin-top:6px;">
+                            <button class="speed-btn" onclick="setSpeed('${audioId}', 1)">1x</button>
+                            <button class="speed-btn" onclick="setSpeed('${audioId}', 1.5)">1.5x</button>
+                            <button class="speed-btn" onclick="setSpeed('${audioId}', 2)">2x</button>
+                            <button class="speed-btn" onclick="setSpeed('${audioId}', 3)">3x</button>
+                            <button class="speed-btn" onclick="setSpeed('${audioId}', 4)">4x</button>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        ${isMyProcessing ? `<button class="unassign-btn" onclick="unassignTashmi(${r.id})">↩️ إلغاء التولي</button>` : `<button class="assign-btn" onclick="assignTashmi(${r.id})">🔄 تولي التصحيح</button>`}
+                    </div>
+                    <textarea class="reply-area" placeholder="اكتب ملاحظتك على التسميع..." id="tnote-${r.id}" ${isMyProcessing ? '' : 'disabled'}></textarea>
+                    <button class="send-btn" onclick="sendTashmiReply(${r.id})" ${isMyProcessing ? '' : 'disabled'}>📤 إرسال الملاحظة</button>
+                `;
+            }
+            html += `<div class="card ${cardClass}" data-id="${r.id}">${badge}<div class="user">👤 ${formatUsername(r.username)} | <strong>المجموعة ${r.group_number}</strong></div>${contentHtml}<div style="font-size:12px;color:#95a5a6;margin-top:5px;">📅 ${r.created_at || ''}</div></div>`;
+        }
+        container.innerHTML = html;
+    }
+
+    // ========== دالة تحميل الصوت عند الضغط على الزر ==========
+    async function loadAudio(audioId, fileId) {
+        const audio = document.getElementById(audioId);
+        if (!audio) return;
+        const source = audio.querySelector('source');
+        if (!source) return;
+        // إذا كان الرابط محملاً مسبقاً، لا نعيد التحميل
+        if (source.src && source.src !== '') return;
+        try {
+            const url = await getAudioUrl(fileId);
+            source.src = url;
+            audio.load(); // إعادة تحميل العنصر
+            // إخفاء زر التحميل بعد نجاح التحميل
+            const parent = audio.closest('.audio-player-wrapper');
+            if (parent) {
+                const loadBtn = parent.querySelector('button[onclick^="loadAudio"]');
+                if (loadBtn) loadBtn.style.display = 'none';
+            }
+        } catch (e) {
+            alert('❌ فشل تحميل الصوت: ' + e.message);
+        }
+    }
+
+    // ========== دالة switchGroup المعدلة ==========
+    async function switchGroup(groupId) {
+        currentGroup = groupId;
+        document.querySelectorAll('.group-tab').forEach(btn => btn.classList.remove('active'));
+        const activeBtn = document.querySelector(`.group-tab[data-group="${groupId}"]`);
+        if (activeBtn) activeBtn.classList.add('active');
+        const filtered = currentGroup === 'all' ? currentTashmiRecords : currentTashmiRecords.filter(r => r.group_number === currentGroup);
+        await renderTashmiRecordsLazy(filtered);
+    }
+
+    // ========== دالة جلب رابط الصوت ==========
+    async function getAudioUrl(fileId) {
+        if (!fileId) throw new Error('معرف الملف فارغ');
+        const res = await fetch(`${BASE_URL}/get_audio_url`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_id: fileId, admin_id: adminId })
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'فشل جلب الرابط');
+        }
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        return data.url;
+    }
+
+    function setSpeed(audioId, rate) {
+        const audio = document.getElementById(audioId);
+        if (audio) {
+            audio.playbackRate = rate;
+            const parent = audio.closest('.audio-player-wrapper');
+            if (parent) {
+                parent.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active-speed'));
+                const btns = parent.querySelectorAll('.speed-btn');
+                const index = [1,1.5,2,3,4].indexOf(rate);
+                if (index !== -1) btns[index].classList.add('active-speed');
+            }
+        }
+    }
+
+    // ========== دوال الاستفسارات ==========
+    async function assignQuestion(qId) {
+        try {
+            const res = await fetch(`${BASE_URL}/assign`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question_id: qId, admin_id: adminId })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(`❌ فشل تولي الرد: ${data.error || 'خطأ غير معروف'}`);
+                return;
+            }
+            loadQuestions();
+        } catch(e) {
+            alert(`❌ خطأ في الاتصال: ${e.message}`);
+        }
+    }
+
+    async function unassignQuestion(qId) {
+        try {
+            const res = await fetch(`${BASE_URL}/unassign`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question_id: qId, admin_id: adminId })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(`❌ فشل إلغاء التولي: ${data.error || 'خطأ غير معروف'}`);
+                return;
+            }
+            loadQuestions();
+        } catch(e) {
+            alert(`❌ خطأ في الاتصال: ${e.message}`);
+        }
+    }
+
+    async function sendReply(qId) {
+        const textarea = document.getElementById(`reply-${qId}`);
+        const reply = textarea.value.trim();
+        if (!reply) { alert('اكتب الرد'); return; }
+        const btn = textarea.nextElementSibling;
+        btn.disabled = true;
+        btn.textContent = '⏳ جاري...';
+        try {
+            const res = await fetch(`${BASE_URL}/reply`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question_id: qId, reply_text: reply, admin_id: adminId })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'فشل الإرسال');
+            loadQuestions();
+        } catch(e) {
+            alert(`❌ ${e.message}`);
+            btn.disabled = false;
+            btn.textContent = '📤 إرسال الرد';
+        }
+    }
+
+    // ========== دوال التسميع ==========
+    async function assignTashmi(recordId) {
+        try {
+            const res = await fetch(`${BASE_URL}/tashmi/assign`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ record_id: recordId, admin_id: adminId })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(`❌ فشل تولي التصحيح: ${data.error || 'خطأ غير معروف'}`);
+                return;
+            }
+            loadTashmiGroups();
+        } catch(e) {
+            alert(`❌ خطأ في الاتصال: ${e.message}`);
+        }
+    }
+
+    async function unassignTashmi(recordId) {
+        alert('سيتم إلغاء التولي تلقائياً بعد 15 دقيقة.');
+        loadTashmiGroups();
+    }
+
+    async function sendTashmiReply(recordId) {
+        const textarea = document.getElementById(`tnote-${recordId}`);
+        const note = textarea.value.trim();
+        if (!note) { alert('الرجاء كتابة الملاحظة'); return; }
+        const btn = textarea.nextElementSibling;
+        btn.disabled = true;
+        btn.textContent = '⏳ جاري...';
+        try {
+            const res = await fetch(`${BASE_URL}/tashmi/reply`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ record_id: recordId, note_text: note, admin_id: adminId })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'فشل الإرسال');
+            loadTashmiGroups();
+        } catch(e) {
+            alert(`❌ ${e.message}`);
+            btn.disabled = false;
+            btn.textContent = '📤 إرسال الملاحظة';
+        }
+    }
+
+    // ======================= دوال إضافية =======================
+    async function deleteAnswered() {
+        if(!confirm('⚠️ حذف جميع الاستفسارات المجاب عليها؟')) return;
+        try {
+            const res = await fetch(`${BASE_URL}/delete_answered`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({admin_id: adminId}) });
+            const data = await res.json();
+            alert(`✅ تم حذف ${data.deleted || 0} استفسار`);
+            loadQuestions();
+        } catch(e){ alert(e.message); }
+    }
+
+    // ======================= تشغيل التطبيق =======================
+    document.addEventListener('DOMContentLoaded', () => {
+        if (!adminId) { document.body.innerHTML = '<div class="error" style="padding:40px;">❌ لم نتمكن من التعرف عليك. تأكد من فتح اللوحة من داخل تيليجرام.</div>'; return; }
+        switchTab('ask');
+        window.BOT_TOKEN = '';
+    });
+</script>
+</body>
+</html>
