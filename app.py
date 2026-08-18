@@ -60,6 +60,7 @@ def assign_question():
         data = request.get_json()
         question_id = data.get('question_id')
         admin_id = data.get('admin_id')
+
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
@@ -71,7 +72,9 @@ def assign_question():
                     "UPDATE questions SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
                     admin_id, question_id
                 )
-                return {"success": result == "UPDATE 1"}
+                # result سيكون مثل "UPDATE 1" أو "UPDATE 0"
+                updated = int(result.split()[1]) if result else 0
+                return {"success": updated == 1}
             finally:
                 await conn.close()
 
@@ -307,6 +310,7 @@ def assign_tashmi():
         data = request.get_json()
         record_id = data.get('record_id')
         admin_id = data.get('admin_id')
+
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
@@ -317,13 +321,14 @@ def assign_tashmi():
                     "UPDATE tashmi_records SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
                     admin_id, record_id
                 )
-                return {"success": result == "UPDATE 1"}
+                updated = int(result.split()[1]) if result else 0
+                return {"success": updated == 1}
             finally:
                 await conn.close()
 
         result = run_async(assign_async())
         if not result.get("success"):
-            return jsonify({"error": "التسميع ليس في حالة انتظار"}), 400
+            return jsonify({"error": "التسميع ليس في حالة انتظار أو تم توليه بالفعل"}), 400
         return jsonify({"success": True}), 200
     except Exception as e:
         logging.error(f"خطأ في تولي التسميع: {e}")
