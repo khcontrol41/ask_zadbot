@@ -520,7 +520,6 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == "📩 سؤال جديد":
         if not username or username == "":
-            # ✅ النص الجديد لرسالة توجيه المعرف
             await update.message.reply_text(
                 "⚠️ *تنبيه:* يلزم وجود معرّف عام (اسم مستخدم) في حسابك لتتمكن من التواصل مع المشرفين\n\n"
                 "📌 *يرجى إعداد معرف خاص بك، ثم العودة وإرسال استفسارك.*\n\n"
@@ -544,6 +543,11 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         context.user_data['waiting_for_question'] = True
 
+    elif text == "🎙️ تسميع جديد":
+        # نستدعي الدالة الخاصة ببدء التسميع من الملف الجديد
+        from tashmi_bot import start_tashmi
+        await start_tashmi(update, context)
+
     elif text == "📚 الأسئلة الشائعة":
         faq_text = """
 أهلاً بكم.. نعمل حالياً على تحديث قسم الأسئلة الشائعة وستُتاح قريبا بإذن الله. وفي حال كان لديكم أي سؤال، يمكنكم التواصل مع المشرفين مباشرة بالضغط على (📩 سؤال جديد).
@@ -553,11 +557,6 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=MAIN_KEYBOARD
         )
         context.user_data['waiting_for_question'] = False
-
-    elif text == "🎙️ تسميع جديد":
-        # نستدعي الدالة الخاصة ببدء التسميع من الملف الجديد
-        from tashmi_bot import start_tashmi
-        await start_tashmi(update, context)
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -692,7 +691,7 @@ def run_bot():
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("stats", stats_command))
-    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
+    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|🎙️ تسميع جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
