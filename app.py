@@ -349,7 +349,6 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 def get_admin_panel_keyboard():
-    """إرجاع زر لوحة المشرفين (يُستخدم في الإشعارات والأمر /admin)"""
     mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"  # ⚠️ غيّر هذا الرابط
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]
@@ -390,16 +389,18 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == "📩 سؤال جديد":
         if not username or username == "":
+            # ✅ النص الجديد لرسالة توجيه المعرف
             await update.message.reply_text(
-                "⚠️ *تنبيه:* لا يمكننا استقبال استفسارك لأن حسابك ليس لديه معرف عام (Username).\n\n"
+                "⚠️ *تنبيه:* يلزم وجود معرّف عام (اسم مستخدم) في حسابك لتتمكن من التواصل مع المشرفين\n\n"
                 "📌 *يرجى إعداد معرف خاص بك، ثم العودة وإرسال استفسارك.*\n\n"
-                "📝 *كيفية إنشاء معرف في تيليجرام:*\n"
-                "1. افتح إعدادات تيليجرام (Settings).\n"
-                "2. اضغط على اسمك أو صورتك الشخصية.\n"
-                "3. اختر 'Username' (اسم المستخدم).\n"
-                "4. اكتب اسماً فريداً (حروف وأرقام) واضغط حفظ.\n\n"
-                "🔹 *إذا واجهتك صعوبة، يرجى التواصل مع الدعم التقني:* @zad41"
-                "سيساعدك الفريق في إعداد معرفك ليتمكن المشرف من التواصل معك والرد على استفسارك.",
+                "📝 *كيفية إنشاء اسم المستخدم في تيليجرام؟*\n"
+                "1. من تيليجرام، افتح الإعدادات.\n"
+                "2. اختر حسابي.\n"
+                "3. اضغط إضافة اسم مستخدم.\n"
+                "4. اكتب المعرّف الذي تريده باللغة الإنجليزية، بشرط ألا يقل عن 5 خانات.\n"
+                "5. اضغط علامة (✔️) لإتمام الحفظ.\n\n"
+                "⭕ *تنبيه:* إذا كان الاسم مستخدمًا من قبل، جرّب اسمًا آخر حتى يظهر لك أنه متاح.\n\n"
+                "📲 *في حال واجهت أي صعوبة في ضبط المعرّف من الإعدادات، يسعدنا تواصلك مع الدعم التقني (@zad41) لنستطيع مساعدتك خطوة بخطوة حتى تتمكن من إعداد المعرّف واستخدام البوت*",
                 parse_mode="Markdown",
                 reply_markup=MAIN_KEYBOARD
             )
@@ -472,7 +473,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['waiting_for_question'] = False
 
-        # ✅ إرسال إشعار للمشرفين مع زر لوحة التحكم
         keyboard = get_admin_panel_keyboard()
         for admin_id in ADMIN_IDS:
             try:
@@ -510,7 +510,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-# --- ✅ أمر الإحصائيات (/stats) ---
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -519,22 +518,17 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        # ✅ عدد الأسئلة المعلّقة (غير المجاب عليها)
         pending_count = await conn.fetchval(
             "SELECT COUNT(*) FROM questions WHERE status IN ('pending', 'processing')"
         )
-        
-        # ✅ أقدم سؤال معلّق (وقت إنشائه)
         oldest = await conn.fetchval(
             "SELECT created_at FROM questions WHERE status IN ('pending', 'processing') ORDER BY created_at ASC LIMIT 1"
         )
     finally:
         await conn.close()
 
-    # ✅ حساب الوقت المنقضي منذ أقدم سؤال
     if oldest:
         now = datetime.now()
-        # تحويل oldest إلى كائن datetime (مع مراعاة فارق التوقيت)
         delta = now - oldest.replace(tzinfo=None)
         hours = int(delta.total_seconds() // 3600)
         minutes = int((delta.total_seconds() % 3600) // 60)
