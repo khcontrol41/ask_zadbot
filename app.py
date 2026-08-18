@@ -400,7 +400,7 @@ def get_audio_url():
         async def fetch_url():
             global bot_app
             if not bot_app:
-                return {"error": "البوت غير جاهز"}
+                return {"error": "البوت لم يكتمل تشغيله بعد، حاول مجدداً"}
             try:
                 file = await bot_app.bot.get_file(file_id)
                 file_path = file.file_path
