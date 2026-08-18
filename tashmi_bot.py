@@ -9,19 +9,17 @@ from app import TOKEN, DATABASE_URL, ADMIN_IDS, get_admin_panel_keyboard
 # حالات المحادثة
 GROUP_SELECTION, VOICE_RECORDING = range(2)
 
-# المجموعات المتاحة (يمكن زيادتها لاحقاً)
+# المجموعات المتاحة (يمكن زيادتها)
 GROUPS = ['1', '2', '3', '4', '5', '6']
 GROUPS_PER_PAGE = 4
 
 def build_group_keyboard(page=0):
-    """بناء لوحة أزرار المجموعات مع أزرار التنقل"""
     total_pages = (len(GROUPS) + GROUPS_PER_PAGE - 1) // GROUPS_PER_PAGE
     start = page * GROUPS_PER_PAGE
     end = min(start + GROUPS_PER_PAGE, len(GROUPS))
     current_groups = GROUPS[start:end]
 
     keyboard = []
-    # صفوف الأزرار: كل صف يحوي زرين
     row = []
     for i, g in enumerate(current_groups):
         row.append(InlineKeyboardButton(f"المجموعة {g}", callback_data=f"group_{g}"))
@@ -31,7 +29,6 @@ def build_group_keyboard(page=0):
     if row:
         keyboard.append(row)
 
-    # أزرار التنقل
     nav_row = []
     if page > 0:
         nav_row.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"page_{page-1}"))
@@ -40,13 +37,11 @@ def build_group_keyboard(page=0):
     if nav_row:
         keyboard.append(nav_row)
 
-    # زر الرجوع للقائمة الرئيسية
     keyboard.append([InlineKeyboardButton("🔙 الرجوع للقائمة الرئيسية", callback_data="back_to_main")])
 
     return InlineKeyboardMarkup(keyboard)
 
 async def start_tashmi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """بداية اختيار المجموعة"""
     user = update.effective_user
     if not user.username:
         await update.message.reply_text(
@@ -64,13 +59,11 @@ async def start_tashmi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return GROUP_SELECTION
 
 async def group_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الضغط على أزرار المجموعات أو التنقل"""
     query = update.callback_query
     await query.answer()
 
     data = query.data
     if data.startswith("group_"):
-        # تم اختيار مجموعة
         group_number = data.split("_")[1]
         context.user_data['group_number'] = group_number
         await query.edit_message_text(
@@ -82,7 +75,6 @@ async def group_selection_callback(update: Update, context: ContextTypes.DEFAULT
         return VOICE_RECORDING
 
     elif data.startswith("page_"):
-        # تغيير الصفحة
         page = int(data.split("_")[1])
         context.user_data['tashmi_page'] = page
         await query.edit_message_text(
@@ -93,7 +85,6 @@ async def group_selection_callback(update: Update, context: ContextTypes.DEFAULT
         return GROUP_SELECTION
 
     elif data == "back_to_main":
-        # الرجوع للقائمة الرئيسية (سيتم إنهاء المحادثة وعرض الأزرار الأساسية)
         from app import MAIN_KEYBOARD
         await query.edit_message_text(
             "🔙 تم العودة إلى القائمة الرئيسية.",
@@ -105,7 +96,6 @@ async def group_selection_callback(update: Update, context: ContextTypes.DEFAULT
     return GROUP_SELECTION
 
 async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """استقبال الملف الصوتي بعد اختيار المجموعة"""
     user = update.effective_user
     group_number = context.user_data.get('group_number', 'غير محدد')
     
@@ -125,12 +115,16 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_id = voice.file_id
         duration = voice.duration or 0
         file_name = "تسجيل صوتي (تليجرام)"
-    elif document and document.mime_type and document.mime_type.startswith('audio/'):
-        file_id = document.file_id
-        duration = 0
-        file_name = document.file_name or "ملف صوتي"
+    elif document:
+        if document.mime_type and document.mime_type.startswith('audio/'):
+            file_id = document.file_id
+            duration = 0  # تيليجرام لا يعطي مدة للمستندات
+            file_name = document.file_name or "ملف صوتي"
+        else:
+            await update.message.reply_text("❌ الرجاء إرسال ملف صوتي (MP3, M4A, OGG, إلخ).")
+            return VOICE_RECORDING
     else:
-        await update.message.reply_text("❌ الرجاء إرسال ملف صوتي (MP3, M4A, OGG) أو تسجيل صوتي.")
+        await update.message.reply_text("❌ الرجاء إرسال ملف صوتي أو تسجيل صوتي.")
         return VOICE_RECORDING
 
     if not file_id:
@@ -174,7 +168,6 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD.keyboard, resize_keyboard=True)
         )
 
-        # إشعار للمشرفين
         keyboard = get_admin_panel_keyboard()
         for admin_id in ADMIN_IDS:
             try:
@@ -196,7 +189,6 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return VOICE_RECORDING
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إلغاء العملية"""
     from app import MAIN_KEYBOARD
     await update.message.reply_text(
         "❌ تم إلغاء عملية التسميع.",
@@ -206,11 +198,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def get_tashmi_handler():
-    """إرجاع معالج المحادثة مع دعم الأزرار"""
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("tashmi", start_tashmi),
-            MessageHandler(filters.Regex("^🎙️ تسميع جديد$"), start_tashmi)  # من الزر المخصص
+            MessageHandler(filters.Regex("^🎙️ تسميع جديد$"), start_tashmi)
         ],
         states={
             GROUP_SELECTION: [CallbackQueryHandler(group_selection_callback)],
