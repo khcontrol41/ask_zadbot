@@ -30,13 +30,17 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 def run_async(coro):
     """تشغيل دالة غير متزامنة في حلقة جديدة ونظيفة"""
     try:
+        # محاولة استخدام asyncio.run() مباشرة (الأكثر استقراراً)
         return asyncio.run(coro)
     except RuntimeError as e:
-        logging.error(f"خطأ في تشغيل الدالة غير المتزامنة: {e}")
-        # محاولة بديلة في حال كانت الحلقة موجودة
+        logging.error(f"خطأ في asyncio.run: {e}")
+        # في حال فشل، نستخدم حلقة جديدة
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
 # --- 3. تهيئة Flask ---
 app = Flask(__name__)
@@ -65,16 +69,14 @@ def assign_question():
         async def assign_async():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # التأكد من وجود العمود
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
                 result = await conn.execute(
                     "UPDATE questions SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
                     admin_id, question_id
                 )
-                # تحليل النتيجة بشكل صحيح
                 updated_count = int(result.split()[1]) if result and result.startswith("UPDATE") else 0
-                logging.info(f"محاولة تولي السؤال {question_id}: تم تحديث {updated_count} صف")
-                return {"success": updated_count == 1, "updated": updated_count}
+                logging.info(f"تولي السؤال {question_id}: {updated_count} صف")
+                return {"success": updated_count == 1}
             finally:
                 await conn.close()
 
@@ -92,7 +94,6 @@ def unassign_question():
         data = request.get_json()
         question_id = data.get('question_id')
         admin_id = data.get('admin_id')
-
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
@@ -292,7 +293,7 @@ def assign_tashmi():
                     admin_id, record_id
                 )
                 updated_count = int(result.split()[1]) if result and result.startswith("UPDATE") else 0
-                logging.info(f"محاولة تولي التسميع {record_id}: تم تحديث {updated_count} صف")
+                logging.info(f"تولي التسميع {record_id}: {updated_count} صف")
                 return {"success": updated_count == 1}
             finally:
                 await conn.close()
