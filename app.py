@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import threading
+import requests  # تمت الإضافة
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -397,10 +398,10 @@ def get_audio_url():
         if not file_id:
             return jsonify({"error": "معرف الملف مطلوب"}), 400
 
-        # استدعاء Bot API مباشرة للحصول على مسار الملف
-        import requests
+        # الاتصال المباشر بـ Telegram Bot API
         url = f"https://api.telegram.org/bot{TOKEN}/getFile?file_id={file_id}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
+        
         if response.status_code != 200:
             return jsonify({"error": "فشل الاتصال بـ Telegram API"}), 500
 
@@ -409,8 +410,9 @@ def get_audio_url():
             return jsonify({"error": result.get('description', 'خطأ غير معروف')}), 400
 
         file_path = result['result']['file_path']
-        # بناء الرابط الكامل
         audio_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+        
+        logging.info(f"تم إنشاء رابط الصوت بنجاح: {audio_url}")
         return jsonify({"url": audio_url})
 
     except Exception as e:
