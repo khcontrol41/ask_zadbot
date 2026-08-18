@@ -78,26 +78,31 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_id = audio.file_id
         duration = audio.duration or 0
         file_name = audio.file_name or "تسجيل صوتي"
+        logging.info(f"استلام ملف AUDIO: duration={duration}")
     elif voice:
         file_id = voice.file_id
         duration = voice.duration or 0
         file_name = "تسجيل صوتي (تليجرام)"
+        logging.info(f"استلام VOICE: duration={duration}")
     elif document and document.mime_type and document.mime_type.startswith('audio/'):
         file_id = document.file_id
-        duration = 0
+        duration = 0  # لا يمكن الحصول على المدة من المستند
         file_name = document.file_name or "ملف صوتي"
+        logging.info(f"استلام DOCUMENT صوتي: {file_name}")
     else:
-        await update.message.reply_text("❌ الرجاء إرسال ملف صوتي.")
+        await update.message.reply_text("❌ الرجاء إرسال ملف صوتي (MP3, M4A, OGG) أو تسجيل صوتي.")
         return VOICE_RECORDING
 
     if not file_id:
-        await update.message.reply_text("❌ حدث خطأ.")
+        await update.message.reply_text("❌ حدث خطأ في قراءة الملف.")
         return VOICE_RECORDING
 
     try:
+        # استخدام run_async لحفظ البيانات في قاعدة البيانات
         async def save_audio():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
+                # التأكد من وجود الجدول
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS tashmi_records (
                         id SERIAL PRIMARY KEY,
@@ -112,7 +117,7 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                # ✅ تأكيد حفظ المدة (duration)
+                # حفظ البيانات مع duration
                 await conn.execute(
                     """INSERT INTO tashmi_records 
                        (student_id, username, group_number, voice_file_id, duration) 
@@ -121,14 +126,16 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     user.username or "مجهول",
                     group_number,
                     file_id,
-                    duration  # <-- تم حفظ المدة هنا
+                    duration
                 )
-                logging.info(f"تم حفظ تسميع للطالب {user.id} بالمجموعة {group_number} والمدة {duration}")
+                logging.info(f"تم حفظ التسميع: student={user.id}, group={group_number}, duration={duration}")
+            except Exception as e:
+                logging.error(f"خطأ في حفظ التسميع في قاعدة البيانات: {e}")
+                raise
             finally:
                 await conn.close()
 
-        # استخدام run_async من الملف الرئيسي لتنفيذ الحفظ
-        from app import run_async
+        # استدعاء الحفظ
         run_async(save_audio())
 
         from app import MAIN_KEYBOARD
@@ -137,6 +144,7 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD.keyboard, resize_keyboard=True)
         )
 
+        # إشعار المشرفين
         keyboard = get_admin_panel_keyboard()
         for admin_id in ADMIN_IDS:
             try:
@@ -154,7 +162,7 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     except Exception as e:
         logging.error(f"خطأ في حفظ التسميع: {e}")
-        await update.message.reply_text("❌ حدث خطأ تقني.")
+        await update.message.reply_text(f"❌ حدث خطأ تقني: {str(e)}")
         return VOICE_RECORDING
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
