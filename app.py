@@ -20,7 +20,6 @@ if not DATABASE_URL:
 
 ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
 
-# ✅ مدة إلغاء التولي التلقائي (بالدقائق)
 AUTO_UNASSIGN_MINUTES = 15
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -132,7 +131,6 @@ def get_questions():
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
                 
-                # ✅ إلغاء التولي التلقائي
                 await conn.execute(
                     f"""
                     UPDATE questions 
@@ -350,6 +348,13 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
+def get_admin_panel_keyboard():
+    """إرجاع زر لوحة المشرفين (يُستخدم في الإشعارات والأمر /admin)"""
+    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"  # ⚠️ غيّر هذا الرابط
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]
+    ])
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = """
 🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان»
@@ -393,8 +398,8 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "2. اضغط على اسمك أو صورتك الشخصية.\n"
                 "3. اختر 'Username' (اسم المستخدم).\n"
                 "4. اكتب اسماً فريداً (حروف وأرقام) واضغط حفظ.\n\n"
-                "🔹 *إذا واجهتك صعوبة، يرجى التواصل مع الدعم التقني:* @zas41"
-                "📌 سيساعدك الفريق في إعداد معرفك ليتمكن المشرف من التواصل معك والرد على استفسارك.",
+                "🔹 *إذا واجهتك صعوبة، يرجى التواصل مع الدعم التقني:* @zad41"
+                "سيساعدك الفريق في إعداد معرفك ليتمكن المشرف من التواصل معك والرد على استفسارك.",
                 parse_mode="Markdown",
                 reply_markup=MAIN_KEYBOARD
             )
@@ -467,11 +472,14 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['waiting_for_question'] = False
 
+        # ✅ إرسال إشعار للمشرفين مع زر لوحة التحكم
+        keyboard = get_admin_panel_keyboard()
         for admin_id in ADMIN_IDS:
             try:
                 await context.bot.send_message(
                     chat_id=admin_id,
-                    text="📩 هناك استفسار جديد في لوحة التحكم."
+                    text="📩 هناك استفسار جديد في لوحة التحكم.",
+                    reply_markup=keyboard
                 )
             except Exception as e:
                 logging.error(f"فشل إرسال الإشعار للمشرف {admin_id}: {e}")
@@ -496,34 +504,51 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
     
-    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"  # ⚠️ غيّر هذا الرابط
-    keyboard = [[InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]]
+    keyboard = get_admin_panel_keyboard()
     await update.message.reply_text(
         "مرحباً بك. تم تسجيل دخولك كمشرف 🌿",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
 
-# --- ✅ ميزة الإحصائيات (الأمر /stats) - المُصححة ---
+# --- ✅ أمر الإحصائيات (/stats) ---
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("⛔ عذراً، ليس لديك صلاحية.")
         return
 
-    # ✅ استخدام await مباشرة لأن الدالة غير متزامنة
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        today = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE created_at >= CURRENT_DATE")
-        week = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'")
-        pending = await conn.fetchval("SELECT COUNT(*) FROM questions WHERE status IN ('pending', 'processing')")
+        # ✅ عدد الأسئلة المعلّقة (غير المجاب عليها)
+        pending_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM questions WHERE status IN ('pending', 'processing')"
+        )
+        
+        # ✅ أقدم سؤال معلّق (وقت إنشائه)
+        oldest = await conn.fetchval(
+            "SELECT created_at FROM questions WHERE status IN ('pending', 'processing') ORDER BY created_at ASC LIMIT 1"
+        )
     finally:
         await conn.close()
 
+    # ✅ حساب الوقت المنقضي منذ أقدم سؤال
+    if oldest:
+        now = datetime.now()
+        # تحويل oldest إلى كائن datetime (مع مراعاة فارق التوقيت)
+        delta = now - oldest.replace(tzinfo=None)
+        hours = int(delta.total_seconds() // 3600)
+        minutes = int((delta.total_seconds() % 3600) // 60)
+        if hours > 0:
+            time_str = f"{hours} ساعة و {minutes} دقيقة"
+        else:
+            time_str = f"{minutes} دقيقة"
+    else:
+        time_str = "لا يوجد أسئلة معلّقة"
+
     message = (
         "📊 *إحصائيات استفسارات المقرأة*\n\n"
-        f"📅 *اليوم:* {today} استفسار\n"
-        f"📆 *الأسبوع:* {week} استفسار\n"
-        f"⏳ *المعلّق حالياً:* {pending} استفسار (بانتظار الرد)"
+        f"⏳ *الأسئلة المعلّقة (غير المجاب عليها):* {pending_count}\n"
+        f"🕐 *أقدم سؤال معلّق منذ:* {time_str}"
     )
 
     await update.message.reply_text(message, parse_mode="Markdown")
@@ -536,7 +561,7 @@ def run_bot():
 
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("stats", stats_command))  # ✅ الأمر الجديد
+    bot_app.add_handler(CommandHandler("stats", stats_command))
     bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
