@@ -520,10 +520,8 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     username = update.effective_user.username
 
-    # ✅ زر "تسميع جديد" - نبدأ عملية التسميع مباشرة
+    # زر "تسميع جديد" يُعالج بواسطة tashmi_bot، لذا نخرجه من هنا
     if text == "🎙️ تسميع جديد":
-        from tashmi_bot import start_tashmi
-        await start_tashmi(update, context)
         return
 
     if text == "📩 سؤال جديد":
@@ -566,10 +564,8 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     question_text = update.message.text
 
-    # 🔥 الأهم: إذا كان المستخدم في حالة انتظار سؤال فقط نتعامل معه
+    # فقط إذا كان الطالب في حالة انتظار سؤال
     if not context.user_data.get('waiting_for_question'):
-        # لا نرسل رسالة "يُرجى استخدام الأيقونات" هنا، بل نتركها تمر بدون رد
-        # حتى لا تتداخل مع محادثة التسميع
         return
 
     if not is_admin(user_id) and (not username or username == ""):
@@ -627,7 +623,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # تجاهل أي رسالة غير نصية (لن تظهر رسالة الخطأ)
+    # تجاهل أي رسالة غير نصية (لا نعرض رسائل خطأ)
     pass
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -687,11 +683,11 @@ def run_bot():
 
     bot_app = Application.builder().token(TOKEN).build()
     
-    # ✅ أولاً: إضافة معالج التسميع (يأخذ الأولوية على النصوص العامة)
+    # ✅ أولاً: معالج التسميع (يأخذ الأولوية للأزرار والأوامر)
     bot_app.add_handler(tashmi_bot.get_tashmi_handler())
     
-    # ✅ ثانياً: معالج الأزرار الرئيسية
-    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|🎙️ تسميع جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
+    # ✅ ثانياً: معالج الأزرار الرئيسية (باستثناء زر التسميع)
+    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
     
     # ✅ ثالثاً: معالج النصوص (الاستفسارات) مع شرط waiting_for_question
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
