@@ -26,18 +26,16 @@ AUTO_UNASSIGN_MINUTES = 15
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- 2. دالة مساعدة جذرية لتشغيل الكود غير المتزامن (تعمل دائماً) ---
+# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن (نسخة مستقرة) ---
 def run_async(coro):
-    """
-    تنفيذ دالة غير متزامنة في حلقة أحداث جديدة (معزولة).
-    هذه الطريقة تضمن عدم التعارض مع أي حلقة أخرى.
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("الحلقة مغلقة، سننشئ جديدة.")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 # --- 3. تهيئة Flask ---
 app = Flask(__name__)
@@ -52,7 +50,7 @@ def home():
 def health():
     return "OK"
 
-# ===================== نقاط API للاستفسارات =====================
+# ===================== نقاط API للاستفسارات (نسخة مستقرة) =====================
 @app.route('/assign', methods=['POST'])
 def assign_question():
     try:
@@ -71,16 +69,17 @@ def assign_question():
                     "UPDATE questions SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
                     admin_id, question_id
                 )
-                updated_count = int(result.split()[1]) if result and result.startswith("UPDATE") else 0
-                logging.info(f"تولي السؤال {question_id}: {updated_count} صف")
-                return {"success": updated_count == 1}
+                if result == "UPDATE 0":
+                    return {"error": "السؤال ليس في حالة انتظار أو تم إسناده بالفعل"}
+                return {"success": True}
             finally:
                 await conn.close()
 
         result = run_async(assign_async())
-        if not result.get("success"):
-            return jsonify({"error": "السؤال ليس في حالة انتظار أو تم توليه بالفعل"}), 400
+        if result.get("error"):
+            return jsonify(result), 400
         return jsonify({"success": True}), 200
+
     except Exception as e:
         logging.error(f"خطأ في إسناد السؤال: {e}")
         return jsonify({"error": str(e)}), 500
@@ -91,6 +90,7 @@ def unassign_question():
         data = request.get_json()
         question_id = data.get('question_id')
         admin_id = data.get('admin_id')
+
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
@@ -101,15 +101,17 @@ def unassign_question():
                     "UPDATE questions SET status = 'pending', assigned_to = NULL WHERE id = $1 AND assigned_to = $2 AND status = 'processing'",
                     question_id, admin_id
                 )
-                updated_count = int(result.split()[1]) if result and result.startswith("UPDATE") else 0
-                return {"success": updated_count == 1}
+                if result == "UPDATE 0":
+                    return {"error": "السؤال ليس قيد المعالجة بواسطتك"}
+                return {"success": True}
             finally:
                 await conn.close()
 
         result = run_async(unassign_async())
-        if not result.get("success"):
-            return jsonify({"error": "السؤال ليس قيد المعالجة بواسطتك"}), 400
+        if result.get("error"):
+            return jsonify(result), 400
         return jsonify({"success": True}), 200
+
     except Exception as e:
         logging.error(f"خطأ في إلغاء التولي: {e}")
         return jsonify({"error": str(e)}), 500
@@ -119,6 +121,7 @@ def get_questions():
     try:
         data = request.get_json()
         user_id = data.get('user_id')
+
         if user_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
@@ -127,6 +130,7 @@ def get_questions():
             try:
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
+
                 await conn.execute(
                     f"""
                     UPDATE questions 
@@ -135,6 +139,7 @@ def get_questions():
                     AND created_at < NOW() - INTERVAL '{AUTO_UNASSIGN_MINUTES} minutes'
                     """
                 )
+
                 rows = await conn.fetch("""
                     SELECT id, user_id, username, question, status, reply, assigned_to, created_at 
                     FROM questions 
@@ -145,9 +150,12 @@ def get_questions():
                 await conn.close()
 
         questions = run_async(fetch_questions())
+
         for q in questions:
             q['created_at'] = q['created_at'].isoformat() if q['created_at'] else None
+
         return jsonify(questions), 200
+
     except Exception as e:
         logging.error(f"خطأ في جلب الأسئلة: {e}")
         return jsonify({"error": str(e)}), 500
@@ -162,17 +170,26 @@ def reply_question():
 
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
+
         if not question_id or not reply_text:
             return jsonify({"error": "بيانات ناقصة"}), 400
 
         async def update_and_send():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                row = await conn.fetchrow("SELECT user_id, assigned_to FROM questions WHERE id = $1", question_id)
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
+                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
+
+                row = await conn.fetchrow(
+                    "SELECT user_id, assigned_to FROM questions WHERE id = $1", 
+                    question_id
+                )
                 if not row:
                     return {"error": "السؤال غير موجود"}
+
                 student_id = row['user_id']
                 assigned_to = row['assigned_to']
+
                 if assigned_to and assigned_to != admin_id:
                     return {"error": "هذا السؤال يُعالج من قبل مشرف آخر"}
 
@@ -188,14 +205,22 @@ def reply_question():
                         text=f"📩 *تم الرد على استفسارك:*\n\n{reply_text}",
                         parse_mode="Markdown"
                     )
+                else:
+                    logging.error("البوت ليس جاهزاً لإرسال الرسائل")
+                    return {"error": "البوت غير جاهز"}
+
                 return {"success": True}
+
             finally:
                 await conn.close()
 
         result = run_async(update_and_send())
+
         if result.get("error"):
             return jsonify(result), 400
+
         return jsonify({"success": True}), 200
+
     except Exception as e:
         logging.error(f"خطأ في الرد: {e}")
         return jsonify({"error": str(e)}), 500
@@ -205,33 +230,36 @@ def delete_answered():
     try:
         data = request.get_json()
         admin_id = data.get('admin_id')
+
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
-        async def delete_async():
+        async def delete_answered_async():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 result = await conn.execute("DELETE FROM questions WHERE status = 'answered'")
                 import re
                 match = re.search(r'DELETE (\d+)', result)
                 count = int(match.group(1)) if match else 0
-                return {"deleted": count}
+                return {"success": True, "deleted": count}
             finally:
                 await conn.close()
 
-        result = run_async(delete_async())
-        return jsonify({"success": True, "deleted": result.get("deleted", 0)}), 200
+        result = run_async(delete_answered_async())
+        return jsonify(result), 200
+
     except Exception as e:
         logging.error(f"خطأ في حذف الأسئلة المجاب عليها: {e}")
         return jsonify({"error": str(e)}), 500
 
-# ===================== نقاط API للتسميع =====================
+# ===================== نقاط API للتسميع (المضافة للصوتيات) =====================
 @app.route('/tashmi/get', methods=['POST'])
 def get_tashmi():
     try:
         data = request.get_json()
         admin_id = data.get('admin_id')
         group = data.get('group', 'all')
+
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
@@ -289,15 +317,15 @@ def assign_tashmi():
                     "UPDATE tashmi_records SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
                     admin_id, record_id
                 )
-                updated_count = int(result.split()[1]) if result and result.startswith("UPDATE") else 0
-                logging.info(f"تولي التسميع {record_id}: {updated_count} صف")
-                return {"success": updated_count == 1}
+                if result == "UPDATE 0":
+                    return {"error": "التسميع ليس في حالة انتظار"}
+                return {"success": True}
             finally:
                 await conn.close()
 
         result = run_async(assign_async())
-        if not result.get("success"):
-            return jsonify({"error": "التسميع ليس في حالة انتظار أو تم توليه بالفعل"}), 400
+        if result.get("error"):
+            return jsonify(result), 400
         return jsonify({"success": True}), 200
     except Exception as e:
         logging.error(f"خطأ في تولي التسميع: {e}")
@@ -338,6 +366,8 @@ def reply_tashmi():
                         text=f"🎙️ *ملاحظة المعلم على تسميعك:*\n\n{note_text}",
                         parse_mode="Markdown"
                     )
+                else:
+                    return {"error": "البوت غير جاهز"}
                 return {"success": True}
             finally:
                 await conn.close()
@@ -350,6 +380,7 @@ def reply_tashmi():
         logging.error(f"خطأ في إرسال ملاحظة التسميع: {e}")
         return jsonify({"error": str(e)}), 500
 
+# ===================== نقطة الصوتيات (الجديدة) =====================
 @app.route('/get_audio_url', methods=['POST'])
 def get_audio_url():
     try:
@@ -370,7 +401,6 @@ def get_audio_url():
             return jsonify({"error": result.get('description', 'خطأ غير معروف')}), 400
         file_path = result['result']['file_path']
         audio_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
-        logging.info(f"تم إنشاء رابط الصوت: {audio_url}")
         return jsonify({"url": audio_url})
     except Exception as e:
         logging.error(f"خطأ في /get_audio_url: {e}")
@@ -398,7 +428,25 @@ def get_admin_panel_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = """
 🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان»
-يسرّنا انضمامكم إلينا، ونسأل الله تعالى أن يوفقنا لخدمتكم.
+
+يسرّنا انضمامكم إلينا، ونسأل الله تعالى أن يوفقنا لخدمتكم وأن نكون عونًا لكم في رحلتكم.
+"يبدأ الطريق بخطوة، وتُقطف ثماره بختمة.. فابدأ مسيرتك، ونحن معك حتى تذوق حلاوة الختمة."
+
+🫧 الخدمات المتاحة عبر البوت:
+صُمِّم هذا البوت للإجابة عن كافة استفساراتكم حول المقرأة، وتسهيل وصولكم إلى المعلومات التي تحتاجونها بكل يسر، بما في ذلك:
+
+📚 البرامج والمسارات التعليمية
+🗓️ مواعيد الحلقات واللقاءات
+📝 إجراءات التسجيل وضوابط الدراسة
+📖 اللوائح التنظيمية وآلية المتابعة
+💬 الاستفسارات العامة والخدمات الإدارية
+
+📌 يرجى تحديد الخيار المناسب من الأيقونات:
+
+📚 الأسئلة الشائعة — للاطلاع على الإرشادات والإجابات المعتمدة.
+📩 سؤال جديد — للتواصل المباشر مع الكادر الإشرافي بالمقرأة.
+
+🌱 «لا تتردد في السؤال، فوضوح الطريق يُعين على حسن المسير»
 """
     await update.message.reply_text(welcome_text, reply_markup=MAIN_KEYBOARD)
 
@@ -411,7 +459,12 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == "📩 سؤال جديد":
         if not username:
-            await update.message.reply_text("⚠️ يلزم وجود معرف عام.", reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text(
+                "⚠️ *تنبيه:* يلزم وجود معرّف عام (اسم مستخدم) في حسابك لتتمكن من التواصل مع المشرفين\n\n"
+                "📌 *يرجى إعداد معرف خاص بك، ثم العودة وإرسال استفسارك.*",
+                parse_mode="Markdown",
+                reply_markup=MAIN_KEYBOARD
+            )
             return
         await update.message.reply_text("✍️ اكتب سؤالك الآن.", reply_markup=ReplyKeyboardRemove())
         context.user_data['waiting_for_question'] = True
@@ -458,7 +511,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"فشل إشعار المشرف: {e}")
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
+    await update.message.reply_text("❌ عذراً، هذا البوت يقبل النصوص فقط.", reply_markup=MAIN_KEYBOARD)
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -479,7 +532,7 @@ def run_bot():
     bot_app = Application.builder().token(TOKEN).build()
 
     bot_app.add_handler(tashmi_bot.get_tashmi_handler())
-    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
+    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|🎙️ تسميع جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
     bot_app.add_handler(CommandHandler("start", start))
