@@ -2,12 +2,12 @@ import os
 import logging
 import asyncio
 import threading
-import requests  # <-- تمت الإضافة
+import requests
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import asyncpg
 
 import tashmi_bot
@@ -22,7 +22,6 @@ if not DATABASE_URL:
     raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
 
 ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
-
 AUTO_UNASSIGN_MINUTES = 15
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
