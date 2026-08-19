@@ -121,14 +121,18 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_id = audio.file_id
         duration = audio.duration or 0
         file_name = audio.file_name or "تسجيل صوتي"
+        logging.info(f"✅ استلام AUDIO: duration={duration}")
     elif voice:
         file_id = voice.file_id
         duration = voice.duration or 0
         file_name = "تسجيل صوتي (تليجرام)"
+        logging.info(f"✅ استلام VOICE: duration={duration}")
     elif document and document.mime_type and document.mime_type.startswith('audio/'):
         file_id = document.file_id
+        # محاولة استخراج المدة من اسم الملف أو من خواص أخرى (ولكن عادةً لا تتوفر)
         duration = 0
         file_name = document.file_name or "ملف صوتي"
+        logging.info(f"✅ استلام DOCUMENT صوتي: {file_name}")
     else:
         await update.message.reply_text("❌ الرجاء إرسال ملف صوتي (MP3, M4A, OGG) أو تسجيل صوتي.")
         return VOICE_RECORDING
@@ -164,6 +168,7 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 file_id,
                 duration
             )
+            logging.info(f"✅ تم حفظ التسميع: group={group_number}, duration={duration}")
         finally:
             await conn.close()
 
