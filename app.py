@@ -3,6 +3,7 @@ import logging
 import asyncio
 import threading
 import requests
+import traceback
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -24,18 +25,26 @@ if not DATABASE_URL:
 ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
 AUTO_UNASSIGN_MINUTES = 15
 
+# إعداد سجلات مفصلة
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-# --- 2. دالة مساعدة جذرية لتشغيل الكود غير المتزامن (تعمل دائماً) ---
+# --- 2. دالة مساعدة جذرية مع سجلات ---
 def run_async(coro):
-    """
-    تنفيذ دالة غير متزامنة باستخدام asyncio.run().
-    هذه الطريقة هي الأكثر استقراراً وتضمن إنشاء حلقة جديدة لكل طلب.
-    """
-    return asyncio.run(coro)
+    """تشغيل دالة غير متزامنة مع سجلات تفصيلية"""
+    logger.info(f"🚀 تشغيل دالة غير متزامنة: {coro.__name__ if hasattr(coro, '__name__') else 'lambda'}")
+    try:
+        # استخدام asyncio.run() الذي ينشئ حلقة جديدة ويغلقها تلقائياً
+        result = asyncio.run(coro)
+        logger.info(f"✅ نجحت الدالة غير المتزامنة: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"❌ فشلت الدالة غير المتزامنة: {e}")
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
 
 # --- 3. تهيئة Flask ---
 app = Flask(__name__)
@@ -53,44 +62,55 @@ def health():
 # ===================== نقاط API للاستفسارات =====================
 @app.route('/assign', methods=['POST'])
 def assign_question():
+    logger.info("=" * 50)
+    logger.info("📩 طلب تولي سؤال جديد")
     try:
         data = request.get_json()
         question_id = data.get('question_id')
         admin_id = data.get('admin_id')
+        logger.info(f"📌 المعطيات: question_id={question_id}, admin_id={admin_id}")
 
         if admin_id not in ADMIN_IDS:
+            logger.warning(f"⛔ رفض: admin_id {admin_id} غير مصرح")
             return jsonify({"error": "غير مصرح"}), 403
 
         async def assign_async():
+            logger.info("🔍 بدء محاولة التحديث في قاعدة البيانات...")
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                # التأكد من وجود العمود
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
                 result = await conn.execute(
                     "UPDATE questions SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
                     admin_id, question_id
                 )
-                # تحليل النتيجة بشكل صحيح
                 updated_count = 0
                 if result and result.startswith("UPDATE"):
                     updated_count = int(result.split()[1])
-                logging.info(f"تولي السؤال {question_id}: تم تحديث {updated_count} صف")
+                logger.info(f"📊 نتيجة التحديث: تم تحديث {updated_count} صف")
                 return {"success": updated_count == 1, "updated": updated_count}
             except Exception as e:
-                logging.error(f"خطأ في قاعدة البيانات أثناء تولي السؤال {question_id}: {e}")
+                logger.error(f"❌ خطأ في قاعدة البيانات: {e}")
+                logger.error(traceback.format_exc())
                 return {"error": str(e)}
             finally:
                 await conn.close()
+                logger.info("🔒 تم إغلاق اتصال قاعدة البيانات")
 
         result = run_async(assign_async())
+        logger.info(f"📤 نتيجة الدالة: {result}")
+
         if result.get("error"):
             return jsonify({"error": result["error"]}), 500
         if not result.get("success"):
+            logger.warning(f"⚠️ لم يتم تحديث أي صف (السؤال {question_id} ليس في حالة انتظار)")
             return jsonify({"error": "السؤال ليس في حالة انتظار أو تم توليه بالفعل"}), 400
+
+        logger.info(f"✅ نجح تولي السؤال {question_id} بواسطة المشرف {admin_id}")
         return jsonify({"success": True}), 200
 
     except Exception as e:
-        logging.error(f"خطأ في إسناد السؤال: {e}")
+        logger.error(f"💥 خطأ غير متوقع في /assign: {e}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 @app.route('/unassign', methods=['POST'])
@@ -306,15 +326,20 @@ def get_tashmi():
 
 @app.route('/tashmi/assign', methods=['POST'])
 def assign_tashmi():
+    logger.info("=" * 50)
+    logger.info("🎙️ طلب تولي تسميع جديد")
     try:
         data = request.get_json()
         record_id = data.get('record_id')
         admin_id = data.get('admin_id')
+        logger.info(f"📌 المعطيات: record_id={record_id}, admin_id={admin_id}")
 
         if admin_id not in ADMIN_IDS:
+            logger.warning(f"⛔ رفض: admin_id {admin_id} غير مصرح")
             return jsonify({"error": "غير مصرح"}), 403
 
         async def assign_async():
+            logger.info("🔍 بدء محاولة تحديث التسميع في قاعدة البيانات...")
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 result = await conn.execute(
@@ -324,23 +349,31 @@ def assign_tashmi():
                 updated_count = 0
                 if result and result.startswith("UPDATE"):
                     updated_count = int(result.split()[1])
-                logging.info(f"تولي التسميع {record_id}: تم تحديث {updated_count} صف")
+                logger.info(f"📊 نتيجة التحديث: تم تحديث {updated_count} صف")
                 return {"success": updated_count == 1, "updated": updated_count}
             except Exception as e:
-                logging.error(f"خطأ في قاعدة البيانات أثناء تولي التسميع {record_id}: {e}")
+                logger.error(f"❌ خطأ في قاعدة البيانات: {e}")
+                logger.error(traceback.format_exc())
                 return {"error": str(e)}
             finally:
                 await conn.close()
+                logger.info("🔒 تم إغلاق اتصال قاعدة البيانات")
 
         result = run_async(assign_async())
+        logger.info(f"📤 نتيجة الدالة: {result}")
+
         if result.get("error"):
             return jsonify({"error": result["error"]}), 500
         if not result.get("success"):
+            logger.warning(f"⚠️ لم يتم تحديث أي صف (التسميع {record_id} ليس في حالة انتظار)")
             return jsonify({"error": "التسميع ليس في حالة انتظار أو تم توليه بالفعل"}), 400
+
+        logger.info(f"✅ نجح تولي التسميع {record_id} بواسطة المشرف {admin_id}")
         return jsonify({"success": True}), 200
 
     except Exception as e:
-        logging.error(f"خطأ في تولي التسميع: {e}")
+        logger.error(f"💥 خطأ غير متوقع في /tashmi/assign: {e}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 @app.route('/tashmi/reply', methods=['POST'])
