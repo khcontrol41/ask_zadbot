@@ -26,21 +26,18 @@ AUTO_UNASSIGN_MINUTES = 15
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- 2. دالة مساعدة جديدة (جذرية) لتشغيل الكود غير المتزامن ---
+# --- 2. دالة مساعدة جذرية لتشغيل الكود غير المتزامن (تعمل دائماً) ---
 def run_async(coro):
-    """تشغيل دالة غير متزامنة في حلقة جديدة ونظيفة"""
+    """
+    تنفيذ دالة غير متزامنة في حلقة أحداث جديدة (معزولة).
+    هذه الطريقة تضمن عدم التعارض مع أي حلقة أخرى.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        # محاولة استخدام asyncio.run() مباشرة (الأكثر استقراراً)
-        return asyncio.run(coro)
-    except RuntimeError as e:
-        logging.error(f"خطأ في asyncio.run: {e}")
-        # في حال فشل، نستخدم حلقة جديدة
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 # --- 3. تهيئة Flask ---
 app = Flask(__name__)
