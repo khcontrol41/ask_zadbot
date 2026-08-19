@@ -552,7 +552,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
     question_text = update.message.text
-    logger.info(f"📩 استلام نص من {user_id}: '{question_text}'")
+    logger.info(f"📩 استلام نص من {user_id}: '{question_text[:50]}...'")
 
     # إذا لم يكن المستخدم في حالة انتظار، نضبطها تلقائياً (حالة الطوارئ)
     if not context.user_data.get('waiting_for_question'):
@@ -569,17 +569,24 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['waiting_for_question'] = False
         return
 
-    # حفظ السؤال في قاعدة البيانات
-    async def save_question():
+    # حفظ السؤال في قاعدة البيانات (استخدام await مباشر)
+    try:
         conn = await asyncpg.connect(DATABASE_URL)
         try:
+            # إنشاء الجدول إذا لم يكن موجوداً
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS questions (
-                    id SERIAL PRIMARY KEY, user_id BIGINT, username TEXT,
-                    question TEXT, status TEXT DEFAULT 'pending', reply TEXT,
-                    assigned_to BIGINT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    id SERIAL PRIMARY KEY, 
+                    user_id BIGINT, 
+                    username TEXT,
+                    question TEXT, 
+                    status TEXT DEFAULT 'pending', 
+                    reply TEXT,
+                    assigned_to BIGINT, 
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # إدراج السؤال
             await conn.execute(
                 "INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)",
                 user_id, username, question_text
@@ -590,9 +597,8 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
         finally:
             await conn.close()
+            logger.info("🔒 تم إغلاق اتصال قاعدة البيانات")
 
-    try:
-        run_async(save_question())
         # إرسال رسالة تأكيد للمستخدم
         await update.message.reply_text(
             "✅ تم استلام استفسارك! سيتم الرد عليه قريباً.",
@@ -616,6 +622,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"💥 خطأ غير متوقع في handle_question: {e}")
+        logger.error(traceback.format_exc())
         await update.message.reply_text(
             "❌ حدث خطأ تقني، حاول مرة أخرى لاحقاً.",
             reply_markup=MAIN_KEYBOARD
