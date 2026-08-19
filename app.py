@@ -519,9 +519,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     username = update.effective_user.username
+    logger.info(f"📌 زر مضغوط: {text} من المستخدم {update.effective_user.id}")
 
     if text == "🎙️ تسميع جديد":
-        return  # يتم التعامل معه في tashmi_bot
+        # يتم التعامل معه في tashmi_bot
+        return
 
     if text == "📩 سؤال جديد":
         if not username:
@@ -532,22 +534,42 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_markup=MAIN_KEYBOARD
             )
             return
-        await update.message.reply_text("✍️ اكتب سؤالك الآن.", reply_markup=ReplyKeyboardRemove())
+        # تعيين حالة انتظار السؤال
         context.user_data['waiting_for_question'] = True
+        await update.message.reply_text(
+            "✍️ اكتب سؤالك الآن، وسنقوم بالرد عليه قريباً.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        logger.info(f"✅ تم تفعيل وضع انتظار السؤال للمستخدم {update.effective_user.id}")
+
     elif text == "📚 الأسئلة الشائعة":
-        await update.message.reply_text("سيتم التحديث قريباً.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(
+            "سيتم التحديث قريباً.",
+            reply_markup=MAIN_KEYBOARD
+        )
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('waiting_for_question'):
-        return
     user_id = update.effective_user.id
     username = update.effective_user.username
     question_text = update.message.text
+    logger.info(f"📩 استلام نص من {user_id}: '{question_text}'")
 
+    # إذا لم يكن المستخدم في حالة انتظار، نضبطها تلقائياً (حالة الطوارئ)
+    if not context.user_data.get('waiting_for_question'):
+        logger.warning(f"⚠️ استلام نص بدون حالة انتظار من {user_id}، نضبطها تلقائياً")
+        context.user_data['waiting_for_question'] = True
+
+    # التحقق من وجود اسم مستخدم
     if not username:
-        await update.message.reply_text("⚠️ يلزم وجود معرف عام.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(
+            "⚠️ يلزم وجود معرف عام (اسم مستخدم) في حسابك لتتمكن من التواصل مع المشرفين.\n"
+            "يرجى إعداد معرف ثم أعد إرسال سؤالك.",
+            reply_markup=MAIN_KEYBOARD
+        )
+        context.user_data['waiting_for_question'] = False
         return
 
+    # حفظ السؤال في قاعدة البيانات
     async def save_question():
         conn = await asyncpg.connect(DATABASE_URL)
         try:
@@ -562,19 +584,43 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)",
                 user_id, username, question_text
             )
+            logger.info(f"✅ تم حفظ سؤال المستخدم {user_id} في قاعدة البيانات")
+        except Exception as e:
+            logger.error(f"❌ خطأ في حفظ السؤال: {e}")
+            raise
         finally:
             await conn.close()
 
-    run_async(save_question())
-    await update.message.reply_text("✅ تم استلام استفسارك!", reply_markup=MAIN_KEYBOARD)
-    context.user_data['waiting_for_question'] = False
+    try:
+        run_async(save_question())
+        # إرسال رسالة تأكيد للمستخدم
+        await update.message.reply_text(
+            "✅ تم استلام استفسارك! سيتم الرد عليه قريباً.",
+            reply_markup=MAIN_KEYBOARD
+        )
+        # إلغاء حالة الانتظار بعد الحفظ
+        context.user_data['waiting_for_question'] = False
+        logger.info(f"✅ تم إرسال تأكيد للمستخدم {user_id}")
 
-    keyboard = get_admin_panel_keyboard()
-    for admin_id in ADMIN_IDS:
-        try:
-            await context.bot.send_message(chat_id=admin_id, text="📩 استفسار جديد.", reply_markup=keyboard)
-        except Exception as e:
-            logging.error(f"فشل إشعار المشرف: {e}")
+        # إشعار المشرفين
+        keyboard = get_admin_panel_keyboard()
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"📩 استفسار جديد من {username} (ID: {user_id})",
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.error(f"فشل إشعار المشرف {admin_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"💥 خطأ غير متوقع في handle_question: {e}")
+        await update.message.reply_text(
+            "❌ حدث خطأ تقني، حاول مرة أخرى لاحقاً.",
+            reply_markup=MAIN_KEYBOARD
+        )
+        context.user_data['waiting_for_question'] = False
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ عذراً، هذا البوت يقبل النصوص فقط.", reply_markup=MAIN_KEYBOARD)
