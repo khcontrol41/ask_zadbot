@@ -34,17 +34,13 @@ logger = logging.getLogger(__name__)
 
 # --- 2. دالة مساعدة جذرية مع سجلات ---
 def run_async(coro):
-    """تشغيل دالة غير متزامنة مع سجلات تفصيلية"""
-    logger.info(f"🚀 تشغيل دالة غير متزامنة: {coro.__name__ if hasattr(coro, '__name__') else 'lambda'}")
+    """تشغيل دالة غير متزامنة في حلقة جديدة ومغلقة تلقائياً"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        # استخدام asyncio.run() الذي ينشئ حلقة جديدة ويغلقها تلقائياً
-        result = asyncio.run(coro)
-        logger.info(f"✅ نجحت الدالة غير المتزامنة: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"❌ فشلت الدالة غير المتزامنة: {e}")
-        logger.error(traceback.format_exc())
-        return {"error": str(e)}
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 # --- 3. تهيئة Flask ---
 app = Flask(__name__)
@@ -196,6 +192,8 @@ def reply_question():
         reply_text = data.get('reply_text')
         admin_id = data.get('admin_id')
 
+        logger.info(f"📩 محاولة رد على السؤال {question_id} من المشرف {admin_id}")
+
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
 
@@ -203,6 +201,8 @@ def reply_question():
             return jsonify({"error": "بيانات ناقصة"}), 400
 
         async def update_and_send():
+            # تأخير بسيط للسماح بتهيئة الحلقة
+            await asyncio.sleep(0)
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
@@ -233,18 +233,26 @@ def reply_question():
                         text=f"📩 *تم الرد على استفسارك:*\n\n{reply_text}",
                         parse_mode="Markdown"
                     )
+                    logger.info(f"✅ تم إرسال الرد للطالب {student_id}")
+                else:
+                    logger.warning("⚠️ البوت غير جاهز لإرسال الرسائل")
                 return {"success": True}
 
             finally:
                 await conn.close()
+                logger.info("🔒 تم إغلاق اتصال قاعدة البيانات")
 
         result = run_async(update_and_send())
         if result.get("error"):
+            logger.error(f"❌ خطأ في الرد: {result['error']}")
             return jsonify(result), 400
+
+        logger.info(f"✅ نجح الرد على السؤال {question_id}")
         return jsonify({"success": True}), 200
 
     except Exception as e:
-        logging.error(f"خطأ في الرد: {e}")
+        logger.error(f"💥 خطأ غير متوقع في /reply: {e}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 @app.route('/delete_answered', methods=['POST'])
@@ -384,12 +392,15 @@ def reply_tashmi():
         note_text = data.get('note_text')
         admin_id = data.get('admin_id')
 
+        logger.info(f"🎙️ محاولة إرسال ملاحظة على التسميع {record_id} من المشرف {admin_id}")
+
         if admin_id not in ADMIN_IDS:
             return jsonify({"error": "غير مصرح"}), 403
         if not record_id or not note_text:
             return jsonify({"error": "بيانات ناقصة"}), 400
 
         async def update_and_send():
+            await asyncio.sleep(0)
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 row = await conn.fetchrow("SELECT student_id, assigned_to FROM tashmi_records WHERE id = $1", record_id)
@@ -412,17 +423,25 @@ def reply_tashmi():
                         text=f"🎙️ *ملاحظة المعلم على تسميعك:*\n\n{note_text}",
                         parse_mode="Markdown"
                     )
+                    logger.info(f"✅ تم إرسال الملاحظة للطالب {student_id}")
+                else:
+                    logger.warning("⚠️ البوت غير جاهز لإرسال الرسائل")
                 return {"success": True}
             finally:
                 await conn.close()
+                logger.info("🔒 تم إغلاق اتصال قاعدة البيانات")
 
         result = run_async(update_and_send())
         if result.get("error"):
+            logger.error(f"❌ خطأ في إرسال الملاحظة: {result['error']}")
             return jsonify(result), 400
+
+        logger.info(f"✅ نجحت ملاحظة التسميع {record_id}")
         return jsonify({"success": True}), 200
 
     except Exception as e:
-        logging.error(f"خطأ في إرسال ملاحظة التسميع: {e}")
+        logger.error(f"💥 خطأ غير متوقع في /tashmi/reply: {e}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 # ===================== نقطة الصوتيات =====================
