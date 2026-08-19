@@ -521,8 +521,13 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     username = update.effective_user.username
     logger.info(f"📌 زر مضغوط: {text} من المستخدم {update.effective_user.id}")
 
+    # تنظيف السياق بالكامل لضمان بداية نظيفة
+    context.user_data.clear()
+
     if text == "🎙️ تسميع جديد":
-        # يتم التعامل معه في tashmi_bot
+        # يتم التعامل معه في tashmi_bot عبر ConversationHandler
+        # لكننا نمرر التحكم إلى tashmi_bot عن طريق إرجاع None
+        # وسيتم استدعاء start_tashmi عبر معالج المحادثة
         return
 
     if text == "📩 سؤال جديد":
