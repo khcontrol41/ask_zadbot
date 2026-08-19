@@ -47,6 +47,9 @@ def build_group_keyboard(page=0):
 
 async def start_tashmi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """بداية اختيار المجموعة"""
+    # تنظيف السياق بالكامل لضمان بداية نظيفة
+    context.user_data.clear()
+    
     user = update.effective_user
     if not user.username:
         await update.message.reply_text(
