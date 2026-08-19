@@ -1,496 +1,180 @@
-import os
 import logging
-import asyncio
-import threading
-import requests
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import asyncpg
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes, CallbackQueryHandler
 
-import tashmi_bot
+from app import TOKEN, DATABASE_URL, ADMIN_IDS, get_admin_panel_keyboard, run_async
 
-# --- 1. الإعدادات الأساسية ---
-TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL")
+GROUP_SELECTION, VOICE_RECORDING = range(2)
+GROUPS = ['1', '2', '3', '4', '5', '6']
+GROUPS_PER_PAGE = 4
 
-if not TOKEN:
-    raise ValueError("لم يتم تعيين متغير البيئة BOT_TOKEN")
-if not DATABASE_URL:
-    raise ValueError("لم يتم تعيين متغير البيئة DATABASE_URL")
+def build_group_keyboard(page=0):
+    total_pages = (len(GROUPS) + GROUPS_PER_PAGE - 1) // GROUPS_PER_PAGE
+    start = page * GROUPS_PER_PAGE
+    end = min(start + GROUPS_PER_PAGE, len(GROUPS))
+    current_groups = GROUPS[start:end]
+    keyboard = []
+    row = []
+    for i, g in enumerate(current_groups):
+        row.append(InlineKeyboardButton(f"المجموعة {g}", callback_data=f"group_{g}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"page_{page-1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("التالي ➡️", callback_data=f"page_{page+1}"))
+    if nav_row:
+        keyboard.append(nav_row)
+    keyboard.append([InlineKeyboardButton("🔙 الرجوع للقائمة الرئيسية", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(keyboard)
 
-ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
-AUTO_UNASSIGN_MINUTES = 15
+async def start_tashmi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user.username:
+        await update.message.reply_text("⚠️ يلزم وجود معرف عام.")
+        return ConversationHandler.END
+    context.user_data['tashmi_page'] = 0
+    await update.message.reply_text("🎙️ *اختر رقم مجموعتك:*", parse_mode="Markdown", reply_markup=build_group_keyboard(0))
+    return GROUP_SELECTION
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+async def group_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("group_"):
+        group_number = data.split("_")[1]
+        context.user_data['group_number'] = group_number
+        await query.edit_message_text(f"✅ تم اختيار المجموعة {group_number}\n\n🎤 أرسل الملف الصوتي الآن.", parse_mode="Markdown", reply_markup=None)
+        return VOICE_RECORDING
+    elif data.startswith("page_"):
+        page = int(data.split("_")[1])
+        context.user_data['tashmi_page'] = page
+        await query.edit_message_text("🎙️ اختر المجموعة:", parse_mode="Markdown", reply_markup=build_group_keyboard(page))
+        return GROUP_SELECTION
+    elif data == "back_to_main":
+        from app import MAIN_KEYBOARD
+        await query.edit_message_text("🔙 تم العودة.", reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD.keyboard, resize_keyboard=True))
+        context.user_data.clear()
+        return ConversationHandler.END
+    return GROUP_SELECTION
 
-# --- 2. دالة مساعدة جذرية لتشغيل الكود غير المتزامن (تعمل دائماً) ---
-def run_async(coro):
-    """
-    تنفيذ دالة غير متزامنة في حلقة أحداث جديدة (معزولة).
-    هذه الطريقة تضمن عدم التعارض مع أي حلقة أخرى.
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    group_number = context.user_data.get('group_number', 'غير محدد')
+    audio = update.message.audio
+    voice = update.message.voice
+    document = update.message.document
+
+    file_id = None
+    duration = 0
+    file_name = ""
+
+    if audio:
+        file_id = audio.file_id
+        duration = audio.duration or 0
+        file_name = audio.file_name or "تسجيل صوتي"
+        logging.info(f"استلام AUDIO: duration={duration}")
+    elif voice:
+        file_id = voice.file_id
+        duration = voice.duration or 0
+        file_name = "تسجيل صوتي (تليجرام)"
+        logging.info(f"استلام VOICE: duration={duration}")
+    elif document and document.mime_type and document.mime_type.startswith('audio/'):
+        file_id = document.file_id
+        duration = 0
+        file_name = document.file_name or "ملف صوتي"
+        logging.info(f"استلام DOCUMENT صوتي: {file_name}")
+    else:
+        await update.message.reply_text("❌ الرجاء إرسال ملف صوتي.")
+        return VOICE_RECORDING
+
+    if not file_id:
+        await update.message.reply_text("❌ حدث خطأ في قراءة الملف.")
+        return VOICE_RECORDING
+
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-# --- 3. تهيئة Flask ---
-app = Flask(__name__)
-CORS(app)
-bot_app = None
-
-@app.route('/')
-def home():
-    return "البوت يعمل! ✅"
-
-@app.route('/health')
-def health():
-    return "OK"
-
-# ===================== نقاط API للاستفسارات =====================
-@app.route('/assign', methods=['POST'])
-def assign_question():
-    try:
-        data = request.get_json()
-        question_id = data.get('question_id')
-        admin_id = data.get('admin_id')
-
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def assign_async():
+        # استخدام run_async لحفظ البيانات
+        async def save_audio():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
-                result = await conn.execute(
-                    "UPDATE questions SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
-                    admin_id, question_id
-                )
-                updated_count = int(result.split()[1]) if result and result.startswith("UPDATE") else 0
-                logging.info(f"تولي السؤال {question_id}: {updated_count} صف")
-                return {"success": updated_count == 1}
-            finally:
-                await conn.close()
-
-        result = run_async(assign_async())
-        if not result.get("success"):
-            return jsonify({"error": "السؤال ليس في حالة انتظار أو تم توليه بالفعل"}), 400
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        logging.error(f"خطأ في إسناد السؤال: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/unassign', methods=['POST'])
-def unassign_question():
-    try:
-        data = request.get_json()
-        question_id = data.get('question_id')
-        admin_id = data.get('admin_id')
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def unassign_async():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                result = await conn.execute(
-                    "UPDATE questions SET status = 'pending', assigned_to = NULL WHERE id = $1 AND assigned_to = $2 AND status = 'processing'",
-                    question_id, admin_id
-                )
-                updated_count = int(result.split()[1]) if result and result.startswith("UPDATE") else 0
-                return {"success": updated_count == 1}
-            finally:
-                await conn.close()
-
-        result = run_async(unassign_async())
-        if not result.get("success"):
-            return jsonify({"error": "السؤال ليس قيد المعالجة بواسطتك"}), 400
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        logging.error(f"خطأ في إلغاء التولي: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/get_questions', methods=['POST'])
-def get_questions():
-    try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        if user_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def fetch_questions():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
-                await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS assigned_to BIGINT;")
-                await conn.execute(
-                    f"""
-                    UPDATE questions 
-                    SET status = 'pending', assigned_to = NULL 
-                    WHERE status = 'processing' 
-                    AND created_at < NOW() - INTERVAL '{AUTO_UNASSIGN_MINUTES} minutes'
-                    """
-                )
-                rows = await conn.fetch("""
-                    SELECT id, user_id, username, question, status, reply, assigned_to, created_at 
-                    FROM questions 
-                    ORDER BY created_at DESC
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS tashmi_records (
+                        id SERIAL PRIMARY KEY,
+                        student_id BIGINT NOT NULL,
+                        username TEXT,
+                        group_number TEXT NOT NULL,
+                        voice_file_id TEXT NOT NULL,
+                        duration INTEGER DEFAULT 0,
+                        status TEXT DEFAULT 'pending',
+                        teacher_note TEXT,
+                        assigned_to BIGINT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
                 """)
-                return [dict(row) for row in rows]
-            finally:
-                await conn.close()
-
-        questions = run_async(fetch_questions())
-        for q in questions:
-            q['created_at'] = q['created_at'].isoformat() if q['created_at'] else None
-        return jsonify(questions), 200
-    except Exception as e:
-        logging.error(f"خطأ في جلب الأسئلة: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/reply', methods=['POST'])
-def reply_question():
-    try:
-        data = request.get_json()
-        question_id = data.get('question_id')
-        reply_text = data.get('reply_text')
-        admin_id = data.get('admin_id')
-
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-        if not question_id or not reply_text:
-            return jsonify({"error": "بيانات ناقصة"}), 400
-
-        async def update_and_send():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                row = await conn.fetchrow("SELECT user_id, assigned_to FROM questions WHERE id = $1", question_id)
-                if not row:
-                    return {"error": "السؤال غير موجود"}
-                student_id = row['user_id']
-                assigned_to = row['assigned_to']
-                if assigned_to and assigned_to != admin_id:
-                    return {"error": "هذا السؤال يُعالج من قبل مشرف آخر"}
-
                 await conn.execute(
-                    "UPDATE questions SET reply = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
-                    reply_text, admin_id, question_id
+                    """INSERT INTO tashmi_records 
+                       (student_id, username, group_number, voice_file_id, duration) 
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    user.id,
+                    user.username or "مجهول",
+                    group_number,
+                    file_id,
+                    duration
                 )
-
-                global bot_app
-                if bot_app:
-                    await bot_app.bot.send_message(
-                        chat_id=student_id,
-                        text=f"📩 *تم الرد على استفسارك:*\n\n{reply_text}",
-                        parse_mode="Markdown"
-                    )
-                return {"success": True}
+                logging.info(f"تم حفظ التسميع: student={user.id}, group={group_number}, duration={duration}")
             finally:
                 await conn.close()
 
-        result = run_async(update_and_send())
-        if result.get("error"):
-            return jsonify(result), 400
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        logging.error(f"خطأ في الرد: {e}")
-        return jsonify({"error": str(e)}), 500
+        run_async(save_audio())
 
-@app.route('/delete_answered', methods=['POST'])
-def delete_answered():
-    try:
-        data = request.get_json()
-        admin_id = data.get('admin_id')
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
+        from app import MAIN_KEYBOARD
+        await update.message.reply_text(
+            "✅ تم رفع التسجيل الصوتي بنجاح!",
+            reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD.keyboard, resize_keyboard=True)
+        )
 
-        async def delete_async():
-            conn = await asyncpg.connect(DATABASE_URL)
+        keyboard = get_admin_panel_keyboard()
+        for admin_id in ADMIN_IDS:
             try:
-                result = await conn.execute("DELETE FROM questions WHERE status = 'answered'")
-                import re
-                match = re.search(r'DELETE (\d+)', result)
-                count = int(match.group(1)) if match else 0
-                return {"deleted": count}
-            finally:
-                await conn.close()
-
-        result = run_async(delete_async())
-        return jsonify({"success": True, "deleted": result.get("deleted", 0)}), 200
-    except Exception as e:
-        logging.error(f"خطأ في حذف الأسئلة المجاب عليها: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# ===================== نقاط API للتسميع =====================
-@app.route('/tashmi/get', methods=['POST'])
-def get_tashmi():
-    try:
-        data = request.get_json()
-        admin_id = data.get('admin_id')
-        group = data.get('group', 'all')
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-
-        async def fetch_tashmi():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                await conn.execute(
-                    f"""
-                    UPDATE tashmi_records 
-                    SET status = 'pending', assigned_to = NULL 
-                    WHERE status = 'processing' 
-                    AND created_at < NOW() - INTERVAL '{AUTO_UNASSIGN_MINUTES} minutes'
-                    """
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"🎙️ *تسميع جديد*\nالمجموعة: {group_number}\nالطالب: @{user.username}",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
                 )
-                if group == 'all':
-                    rows = await conn.fetch("""
-                        SELECT id, student_id, username, group_number, voice_file_id, 
-                               duration, status, teacher_note, assigned_to, created_at 
-                        FROM tashmi_records 
-                        ORDER BY created_at DESC
-                    """)
-                else:
-                    rows = await conn.fetch("""
-                        SELECT id, student_id, username, group_number, voice_file_id, 
-                               duration, status, teacher_note, assigned_to, created_at 
-                        FROM tashmi_records 
-                        WHERE group_number = $1
-                        ORDER BY created_at DESC
-                    """, group)
-                return [dict(row) for row in rows]
-            finally:
-                await conn.close()
+            except Exception as e:
+                logging.error(f"فشل إشعار المشرف: {e}")
 
-        records = run_async(fetch_tashmi())
-        for r in records:
-            r['created_at'] = r['created_at'].isoformat() if r['created_at'] else None
-        return jsonify(records), 200
+        context.user_data.clear()
+        return ConversationHandler.END
+
     except Exception as e:
-        logging.error(f"خطأ في جلب التسميعات: {e}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"خطأ في حفظ التسميع: {e}")
+        await update.message.reply_text(f"❌ حدث خطأ تقني: {str(e)}")
+        return VOICE_RECORDING
 
-@app.route('/tashmi/assign', methods=['POST'])
-def assign_tashmi():
-    try:
-        data = request.get_json()
-        record_id = data.get('record_id')
-        admin_id = data.get('admin_id')
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from app import MAIN_KEYBOARD
+    await update.message.reply_text("❌ تم الإلغاء.", reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD.keyboard, resize_keyboard=True))
+    context.user_data.clear()
+    return ConversationHandler.END
 
-        async def assign_async():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                result = await conn.execute(
-                    "UPDATE tashmi_records SET status = 'processing', assigned_to = $1 WHERE id = $2 AND status = 'pending'",
-                    admin_id, record_id
-                )
-                updated_count = int(result.split()[1]) if result and result.startswith("UPDATE") else 0
-                logging.info(f"تولي التسميع {record_id}: {updated_count} صف")
-                return {"success": updated_count == 1}
-            finally:
-                await conn.close()
-
-        result = run_async(assign_async())
-        if not result.get("success"):
-            return jsonify({"error": "التسميع ليس في حالة انتظار أو تم توليه بالفعل"}), 400
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        logging.error(f"خطأ في تولي التسميع: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/tashmi/reply', methods=['POST'])
-def reply_tashmi():
-    try:
-        data = request.get_json()
-        record_id = data.get('record_id')
-        note_text = data.get('note_text')
-        admin_id = data.get('admin_id')
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-        if not record_id or not note_text:
-            return jsonify({"error": "بيانات ناقصة"}), 400
-
-        async def update_and_send():
-            conn = await asyncpg.connect(DATABASE_URL)
-            try:
-                row = await conn.fetchrow("SELECT student_id, assigned_to FROM tashmi_records WHERE id = $1", record_id)
-                if not row:
-                    return {"error": "التسميع غير موجود"}
-                student_id = row['student_id']
-                assigned_to = row['assigned_to']
-                if assigned_to and assigned_to != admin_id:
-                    return {"error": "يُعالج من قبل مشرف آخر"}
-
-                await conn.execute(
-                    "UPDATE tashmi_records SET teacher_note = $1, status = 'answered', assigned_to = $2 WHERE id = $3",
-                    note_text, admin_id, record_id
-                )
-
-                global bot_app
-                if bot_app:
-                    await bot_app.bot.send_message(
-                        chat_id=student_id,
-                        text=f"🎙️ *ملاحظة المعلم على تسميعك:*\n\n{note_text}",
-                        parse_mode="Markdown"
-                    )
-                return {"success": True}
-            finally:
-                await conn.close()
-
-        result = run_async(update_and_send())
-        if result.get("error"):
-            return jsonify(result), 400
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        logging.error(f"خطأ في إرسال ملاحظة التسميع: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/get_audio_url', methods=['POST'])
-def get_audio_url():
-    try:
-        data = request.get_json()
-        file_id = data.get('file_id')
-        admin_id = data.get('admin_id')
-        if admin_id not in ADMIN_IDS:
-            return jsonify({"error": "غير مصرح"}), 403
-        if not file_id:
-            return jsonify({"error": "معرف الملف مطلوب"}), 400
-
-        url = f"https://api.telegram.org/bot{TOKEN}/getFile?file_id={file_id}"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return jsonify({"error": "فشل الاتصال بـ Telegram API"}), 500
-        result = response.json()
-        if not result.get('ok'):
-            return jsonify({"error": result.get('description', 'خطأ غير معروف')}), 400
-        file_path = result['result']['file_path']
-        audio_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
-        logging.info(f"تم إنشاء رابط الصوت: {audio_url}")
-        return jsonify({"url": audio_url})
-    except Exception as e:
-        logging.error(f"خطأ في /get_audio_url: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# ===================== دوال البوت الأساسية =====================
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton("📩 سؤال جديد"), KeyboardButton("🎙️ تسميع جديد")],
-        [KeyboardButton("📚 الأسئلة الشائعة")]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False
-)
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-def get_admin_panel_keyboard():
-    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]
-    ])
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = """
-🌿 أهلاً وسهلاً بكم في مقرأة «زاد الفرقان»
-يسرّنا انضمامكم إلينا، ونسأل الله تعالى أن يوفقنا لخدمتكم.
-"""
-    await update.message.reply_text(welcome_text, reply_markup=MAIN_KEYBOARD)
-
-async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    username = update.effective_user.username
-
-    if text == "🎙️ تسميع جديد":
-        return  # يتم التعامل معه في tashmi_bot
-
-    if text == "📩 سؤال جديد":
-        if not username:
-            await update.message.reply_text("⚠️ يلزم وجود معرف عام.", reply_markup=MAIN_KEYBOARD)
-            return
-        await update.message.reply_text("✍️ اكتب سؤالك الآن.", reply_markup=ReplyKeyboardRemove())
-        context.user_data['waiting_for_question'] = True
-    elif text == "📚 الأسئلة الشائعة":
-        await update.message.reply_text("سيتم التحديث قريباً.", reply_markup=MAIN_KEYBOARD)
-
-async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('waiting_for_question'):
-        return
-    user_id = update.effective_user.id
-    username = update.effective_user.username
-    question_text = update.message.text
-
-    if not username:
-        await update.message.reply_text("⚠️ يلزم وجود معرف عام.", reply_markup=MAIN_KEYBOARD)
-        return
-
-    async def save_question():
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS questions (
-                    id SERIAL PRIMARY KEY, user_id BIGINT, username TEXT,
-                    question TEXT, status TEXT DEFAULT 'pending', reply TEXT,
-                    assigned_to BIGINT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await conn.execute(
-                "INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)",
-                user_id, username, question_text
-            )
-        finally:
-            await conn.close()
-
-    run_async(save_question())
-    await update.message.reply_text("✅ تم استلام استفسارك!", reply_markup=MAIN_KEYBOARD)
-    context.user_data['waiting_for_question'] = False
-
-    keyboard = get_admin_panel_keyboard()
-    for admin_id in ADMIN_IDS:
-        try:
-            await context.bot.send_message(chat_id=admin_id, text="📩 استفسار جديد.", reply_markup=keyboard)
-        except Exception as e:
-            logging.error(f"فشل إشعار المشرف: {e}")
-
-async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ غير مصرح.")
-        return
-    await update.message.reply_text("مرحباً مشرف.", reply_markup=get_admin_panel_keyboard())
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    await update.message.reply_text("📊 إحصائيات متاحة في اللوحة.")
-
-# ===================== تشغيل البوت =====================
-def run_bot():
-    global bot_app
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    bot_app = Application.builder().token(TOKEN).build()
-
-    bot_app.add_handler(tashmi_bot.get_tashmi_handler())
-    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
-    bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("stats", stats_command))
-    bot_app.add_handler(CommandHandler("admin", admin_panel))
-
-    print("✅ البوت يعمل...")
-    bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
-
-if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.start()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+def get_tashmi_handler():
+    return ConversationHandler(
+        entry_points=[
+            CommandHandler("tashmi", start_tashmi),
+            MessageHandler(filters.Regex("^🎙️ تسميع جديد$"), start_tashmi)
+        ],
+        states={
+            GROUP_SELECTION: [CallbackQueryHandler(group_selection_callback)],
+            VOICE_RECORDING: [
+                MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.ALL, receive_audio_file)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
