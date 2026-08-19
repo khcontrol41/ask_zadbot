@@ -78,17 +78,14 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_id = audio.file_id
         duration = audio.duration or 0
         file_name = audio.file_name or "تسجيل صوتي"
-        logging.info(f"استلام AUDIO: duration={duration}")
     elif voice:
         file_id = voice.file_id
         duration = voice.duration or 0
         file_name = "تسجيل صوتي (تليجرام)"
-        logging.info(f"استلام VOICE: duration={duration}")
     elif document and document.mime_type and document.mime_type.startswith('audio/'):
         file_id = document.file_id
         duration = 0
         file_name = document.file_name or "ملف صوتي"
-        logging.info(f"استلام DOCUMENT صوتي: {file_name}")
     else:
         await update.message.reply_text("❌ الرجاء إرسال ملف صوتي.")
         return VOICE_RECORDING
@@ -98,7 +95,6 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return VOICE_RECORDING
 
     try:
-        # استخدام run_async لحفظ البيانات
         async def save_audio():
             conn = await asyncpg.connect(DATABASE_URL)
             try:
@@ -126,7 +122,6 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     file_id,
                     duration
                 )
-                logging.info(f"تم حفظ التسميع: student={user.id}, group={group_number}, duration={duration}")
             finally:
                 await conn.close()
 
@@ -155,7 +150,7 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     except Exception as e:
         logging.error(f"خطأ في حفظ التسميع: {e}")
-        await update.message.reply_text(f"❌ حدث خطأ تقني: {str(e)}")
+        await update.message.reply_text("❌ حدث خطأ تقني، حاول مرة أخرى.")
         return VOICE_RECORDING
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
