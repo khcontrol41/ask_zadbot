@@ -11,9 +11,6 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardB
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import asyncpg
 
-# استيراد دوال التسميع (بدون ConversationHandler)
-from tashmi_bot import start_tashmi, tashmi_callback_handler, receive_audio_file
-
 # --- 1. الإعدادات الأساسية ---
 TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -494,7 +491,7 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     username = update.effective_user.username
     logger.info(f"📌 زر مضغوط: {text} من المستخدم {update.effective_user.id}")
 
-    # زر "تسميع جديد" يُعالج بواسطة المعالج المباشر (ليس هنا)
+    # زر "تسميع جديد" يُعالج بواسطة المعالج المباشر في run_bot (ليس هنا)
     if text == "🎙️ تسميع جديد":
         return
 
@@ -610,18 +607,21 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== تشغيل البوت =====================
 def run_bot():
     global bot_app
+    # استيراد دوال التسميع من الملف المستقل (داخل الدالة لتجنب الاستيراد الدائري)
+    import tashmi_bot
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     bot_app = Application.builder().token(TOKEN).build()
 
     # 1. معالج زر "تسميع جديد" (مباشر)
-    bot_app.add_handler(MessageHandler(filters.Regex("^🎙️ تسميع جديد$"), start_tashmi))
+    bot_app.add_handler(MessageHandler(filters.Regex("^🎙️ تسميع جديد$"), tashmi_bot.start_tashmi))
 
     # 2. معالج أزرار المجموعات (CallbackQuery)
-    bot_app.add_handler(CallbackQueryHandler(tashmi_callback_handler, pattern="^(group_|page_|back_to_main)"))
+    bot_app.add_handler(CallbackQueryHandler(tashmi_bot.tashmi_callback_handler, pattern="^(group_|page_|back_to_main)"))
 
     # 3. معالج استقبال الصوتيات (مع شرط الحالة)
-    bot_app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.ALL, receive_audio_file))
+    bot_app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.ALL, tashmi_bot.receive_audio_file))
 
     # 4. معالج الأزرار الرئيسية (للاستفسارات والأسئلة الشائعة)
     bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
@@ -637,7 +637,7 @@ def run_bot():
     bot_app.add_handler(CommandHandler("stats", stats_command))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
 
-    print("✅ البوت يعمل (بدون ConversationHandler)...")
+    print("✅ البوت يعمل...")
     bot_app.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
 
 # --- 6. تشغيل Flask ---
