@@ -29,33 +29,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- 2. متغير عام لحلقة البوت ---
-bot_loop = None
-
+# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن (الحل النهائي) ---
 def run_async(coro):
-    """تشغيل دالة غير متزامنة باستخدام حلقة البوت الرئيسية إن وجدت، وإلا إنشاء حلقة جديدة"""
-    global bot_loop
-    if bot_loop is not None and not bot_loop.is_closed():
-        # استخدام الحلقة الرئيسية للبوت
-        future = asyncio.run_coroutine_threadsafe(coro, bot_loop)
-        try:
-            return future.result(timeout=30)  # مهلة 30 ثانية
-        except Exception as e:
-            logger.error(f"❌ فشل في run_async (باستخدام bot_loop): {e}")
-            logger.error(traceback.format_exc())
+    """
+    تشغيل دالة غير متزامنة في حلقة جديدة باستخدام asyncio.run()
+    هذه الطريقة هي الأكثر استقراراً وتضمن عدم التداخل مع حلقة البوت الرئيسية
+    """
+    try:
+        return asyncio.run(coro)
+    except RuntimeError as e:
+        if "cannot be called from a running event loop" in str(e):
+            # حالة نادرة: محاولة تشغيل حلقة من داخل حلقة أخرى
+            # نستخدم حلقة جديدة مؤقتة
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+        else:
             raise
-    else:
-        # إنشاء حلقة جديدة (كحل احتياطي)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"❌ فشل في run_async (حلقة جديدة): {e}")
-            logger.error(traceback.format_exc())
-            raise
-        finally:
-            loop.close()
 
 # --- 3. تهيئة Flask ---
 app = Flask(__name__)
@@ -619,9 +612,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===================== تشغيل البوت =====================
 def run_bot():
-    global bot_app, bot_loop
-    bot_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(bot_loop)
+    global bot_app
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     bot_app = Application.builder().token(TOKEN).build()
 
     import tashmi_bot
