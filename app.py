@@ -29,19 +29,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- 2. دالة مساعدة لتشغيل الكود غير المتزامن ---
+# --- 2. متغير عام لحلقة البوت ---
+bot_loop = None
+
 def run_async(coro):
-    """تشغيل دالة غير متزامنة في حلقة جديدة ومغلقة تلقائياً"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    except Exception as e:
-        logger.error(f"❌ فشل في run_async: {e}")
-        logger.error(traceback.format_exc())
-        raise
-    finally:
-        loop.close()
+    """تشغيل دالة غير متزامنة باستخدام حلقة البوت الرئيسية إن وجدت، وإلا إنشاء حلقة جديدة"""
+    global bot_loop
+    if bot_loop is not None and not bot_loop.is_closed():
+        # استخدام الحلقة الرئيسية للبوت
+        future = asyncio.run_coroutine_threadsafe(coro, bot_loop)
+        try:
+            return future.result(timeout=30)  # مهلة 30 ثانية
+        except Exception as e:
+            logger.error(f"❌ فشل في run_async (باستخدام bot_loop): {e}")
+            logger.error(traceback.format_exc())
+            raise
+    else:
+        # إنشاء حلقة جديدة (كحل احتياطي)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        except Exception as e:
+            logger.error(f"❌ فشل في run_async (حلقة جديدة): {e}")
+            logger.error(traceback.format_exc())
+            raise
+        finally:
+            loop.close()
 
 # --- 3. تهيئة Flask ---
 app = Flask(__name__)
@@ -189,7 +203,6 @@ def reply_question():
             return jsonify({"error": "بيانات ناقصة"}), 400
 
         async def update_and_send():
-            await asyncio.sleep(0)
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 await conn.execute("ALTER TABLE questions ADD COLUMN IF NOT EXISTS reply TEXT;")
@@ -374,7 +387,6 @@ def reply_tashmi():
             return jsonify({"error": "بيانات ناقصة"}), 400
 
         async def update_and_send():
-            await asyncio.sleep(0)
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 row = await conn.fetchrow("SELECT student_id, assigned_to FROM tashmi_records WHERE id = $1", record_id)
@@ -495,17 +507,14 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     username = update.effective_user.username
     logger.info(f"📌 handle_main_buttons: {text} من المستخدم {update.effective_user.id}")
 
-    # زر "تسميع جديد" يُعالج بواسطة المعالج المباشر في run_bot
     if text == "🎙️ تسميع جديد":
         logger.info("⏭️ تجاهل زر التسميع في handle_main_buttons")
         return
 
     if text == "📩 سؤال جديد":
-        # مسح أي بيانات سابقة متعلقة بالتسميع
         context.user_data.pop('group_number', None)
         context.user_data.pop('tashmi_page', None)
         context.user_data.pop('tashmi_state', None)
-        # تعيين حالة انتظار السؤال
         context.user_data['waiting_for_question'] = True
 
         if not username:
@@ -531,7 +540,6 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ✅ التأكد من أن المستخدم في حالة انتظار سؤال، وليس في حالة تسميع
     if not context.user_data.get('waiting_for_question'):
         return
 
@@ -611,33 +619,21 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===================== تشغيل البوت =====================
 def run_bot():
-    global bot_app
-    # استيراد دوال التسميع من الملف المستقل (داخل الدالة لتجنب الاستيراد الدائري)
-    import tashmi_bot
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    global bot_app, bot_loop
+    bot_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(bot_loop)
     bot_app = Application.builder().token(TOKEN).build()
 
-    # 1. معالج زر "تسميع جديد" (مباشر) باستخدام filters.Text للمطابقة التامة
+    import tashmi_bot
+
     bot_app.add_handler(MessageHandler(filters.Text("🎙️ تسميع جديد"), tashmi_bot.start_tashmi))
-
-    # 2. معالج أزرار المجموعات (CallbackQuery)
     bot_app.add_handler(CallbackQueryHandler(tashmi_bot.tashmi_callback_handler, pattern="^(group_|page_|back_to_main)"))
-
-    # 3. معالج استقبال الصوتيات (مع شرط الحالة)
     bot_app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.ALL, tashmi_bot.receive_audio_file))
 
-    # 4. معالج الأزرار الرئيسية (للاستفسارات والأسئلة الشائعة)
     bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
-
-    # 5. معالج النصوص العامة (الاستفسارات) مع شرط waiting_for_question
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
-
-    # 6. معالج الوسائط غير النصية (نتجاهلها)
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
 
-    # 7. الأوامر
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("stats", stats_command))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
