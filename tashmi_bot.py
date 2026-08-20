@@ -1,7 +1,6 @@
-# tashmi_bot.py - نسخة مع حل جذري لمشكلة حلقة الأحداث
+# tashmi_bot.py - النسخة النهائية (بدون run_async)
 import logging
 import os
-import asyncio
 import asyncpg
 import traceback
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
@@ -36,20 +35,6 @@ def get_admin_panel_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]
     ])
-
-# ✅ الحل الجذري: إنشاء حلقة جديدة لكل طلب (بدون استخدام get_event_loop)
-def run_async(coro):
-    """تشغيل دالة غير متزامنة في حلقة جديدة ومغلقة تلقائياً"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    except Exception as e:
-        logger.error(f"❌ فشل في run_async: {e}")
-        logger.error(traceback.format_exc())
-        raise
-    finally:
-        loop.close()
 
 # المجموعات
 GROUPS = ['1', '2', '3', '4', '5', '6']
@@ -183,6 +168,7 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     try:
+        # ✅ الحل الجذري: حفظ البيانات مباشرة باستخدام await (بدون run_async)
         async def save_audio():
             logger.info(f"💾 محاولة حفظ التسميع في قاعدة البيانات...")
             if not DATABASE_URL:
@@ -223,8 +209,8 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await conn.close()
                 logger.info("🔒 تم إغلاق اتصال قاعدة البيانات")
 
-        # ✅ الآن يعمل run_async بشكل صحيح لأننا نستخدم new_event_loop
-        run_async(save_audio())
+        # ✅ استدعاء الدالة مباشرة باستخدام await (بدون run_async)
+        await save_audio()
 
         await update.message.reply_text(
             "✅ تم رفع التسجيل الصوتي بنجاح!\n"
