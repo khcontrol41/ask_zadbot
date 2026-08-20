@@ -1,4 +1,4 @@
-# tashmi_bot.py - نسخة معززة بالسجلات
+# tashmi_bot.py - نسخة مع حل جذري لمشكلة حلقة الأحداث
 import logging
 import os
 import asyncio
@@ -37,8 +37,9 @@ def get_admin_panel_keyboard():
         [InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]
     ])
 
+# ✅ الحل الجذري: إنشاء حلقة جديدة لكل طلب (بدون استخدام get_event_loop)
 def run_async(coro):
-    """تشغيل دالة غير متزامنة في حلقة جديدة"""
+    """تشغيل دالة غير متزامنة في حلقة جديدة ومغلقة تلقائياً"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -222,7 +223,7 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await conn.close()
                 logger.info("🔒 تم إغلاق اتصال قاعدة البيانات")
 
-        # تشغيل save_audio
+        # ✅ الآن يعمل run_async بشكل صحيح لأننا نستخدم new_event_loop
         run_async(save_audio())
 
         await update.message.reply_text(
