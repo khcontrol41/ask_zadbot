@@ -521,16 +521,19 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     username = update.effective_user.username
     logger.info(f"📌 زر مضغوط: {text} من المستخدم {update.effective_user.id}")
 
-    # تنظيف السياق بالكامل لإنهاء أي محادثة سابقة (تسميع أو سؤال)
-    context.user_data.clear()
-
+    # ✅ لا نمسح السياق هنا، بل نترك كل زر يتعامل مع حالته
     if text == "🎙️ تسميع جديد":
-        # استدعاء بداية التسميع مباشرة (بدون الحاجة لـ entry_point)
-        from tashmi_bot import start_tashmi
-        await start_tashmi(update, context)
-        return  # مهم: لا نستمر في التنفيذ
+        # سيتم التعامل معه بواسطة ConversationHandler عبر entry_points
+        # لا نفعل شيئاً هنا، نتركه يمر إلى المعالج
+        return
 
     if text == "📩 سؤال جديد":
+        # مسح أي بيانات سابقة متعلقة بالتسميع
+        context.user_data.pop('group_number', None)
+        context.user_data.pop('tashmi_page', None)
+        # تعيين حالة انتظار السؤال
+        context.user_data['waiting_for_question'] = True
+        
         if not username:
             await update.message.reply_text(
                 "⚠️ *تنبيه:* يلزم وجود معرّف عام (اسم مستخدم) في حسابك لتتمكن من التواصل مع المشرفين\n\n"
@@ -538,9 +541,9 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode="Markdown",
                 reply_markup=MAIN_KEYBOARD
             )
+            context.user_data['waiting_for_question'] = False
             return
-        # تعيين حالة انتظار السؤال
-        context.user_data['waiting_for_question'] = True
+        
         await update.message.reply_text(
             "✍️ اكتب سؤالك الآن، وسنقوم بالرد عليه قريباً.",
             reply_markup=ReplyKeyboardRemove()
