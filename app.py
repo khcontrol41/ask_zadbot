@@ -36,6 +36,10 @@ def run_async(coro):
     asyncio.set_event_loop(loop)
     try:
         return loop.run_until_complete(coro)
+    except Exception as e:
+        logger.error(f"❌ فشل في run_async: {e}")
+        logger.error(traceback.format_exc())
+        raise
     finally:
         loop.close()
 
@@ -489,10 +493,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     username = update.effective_user.username
-    logger.info(f"📌 زر مضغوط: {text} من المستخدم {update.effective_user.id}")
+    logger.info(f"📌 handle_main_buttons: {text} من المستخدم {update.effective_user.id}")
 
-    # زر "تسميع جديد" يُعالج بواسطة المعالج المباشر في run_bot (ليس هنا)
+    # زر "تسميع جديد" يُعالج بواسطة المعالج المباشر في run_bot
     if text == "🎙️ تسميع جديد":
+        logger.info("⏭️ تجاهل زر التسميع في handle_main_buttons")
         return
 
     if text == "📩 سؤال جديد":
@@ -614,8 +619,8 @@ def run_bot():
     asyncio.set_event_loop(loop)
     bot_app = Application.builder().token(TOKEN).build()
 
-    # 1. معالج زر "تسميع جديد" (مباشر)
-    bot_app.add_handler(MessageHandler(filters.Regex("^🎙️ تسميع جديد$"), tashmi_bot.start_tashmi))
+    # 1. معالج زر "تسميع جديد" (مباشر) باستخدام filters.Text للمطابقة التامة
+    bot_app.add_handler(MessageHandler(filters.Text("🎙️ تسميع جديد"), tashmi_bot.start_tashmi))
 
     # 2. معالج أزرار المجموعات (CallbackQuery)
     bot_app.add_handler(CallbackQueryHandler(tashmi_bot.tashmi_callback_handler, pattern="^(group_|page_|back_to_main)"))
