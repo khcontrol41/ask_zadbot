@@ -1,19 +1,27 @@
-# tashmi_bot.py - نسخة مستقلة تماماً (لا تستورد من app)
+# tashmi_bot.py - نسخة معززة بالسجلات
 import logging
 import os
 import asyncio
 import asyncpg
+import traceback
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# تعريفات محلية (لا تستورد من app)
+# إعداد السجلات
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# تعريفات محلية
 TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# قائمة المشرفين (ضع رقمك هنا)
-ADMIN_IDS = [5387087412]
+if not DATABASE_URL:
+    logger.error("❌ DATABASE_URL غير معرف في متغيرات البيئة!")
+else:
+    logger.info("✅ DATABASE_URL موجود")
 
-# لوحة المفاتيح الرئيسية (نسخة محلية)
+ADMIN_IDS = [5387087412]  # ⚠️ ضع رقمك هنا
+
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [InlineKeyboardButton("📩 سؤال جديد"), InlineKeyboardButton("🎙️ تسميع جديد")],
@@ -24,18 +32,21 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 def get_admin_panel_keyboard():
-    """لوحة المشرفين (نسخة محلية)"""
     mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]
     ])
 
 def run_async(coro):
-    """تشغيل دالة غير متزامنة في حلقة جديدة (نسخة محلية)"""
+    """تشغيل دالة غير متزامنة في حلقة جديدة"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         return loop.run_until_complete(coro)
+    except Exception as e:
+        logger.error(f"❌ فشل في run_async: {e}")
+        logger.error(traceback.format_exc())
+        raise
     finally:
         loop.close()
 
@@ -72,7 +83,7 @@ def build_group_keyboard(page=0):
 
 async def start_tashmi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """بدء عملية التسميع - عرض أزرار المجموعات"""
-    # تنظيف أي حالة سابقة
+    logger.info(f"🎙️ start_tashmi تم استدعاؤها من المستخدم {update.effective_user.id}")
     context.user_data.clear()
     user = update.effective_user
     if not user.username:
@@ -82,7 +93,6 @@ async def start_tashmi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ضبط الحالة
     context.user_data['tashmi_state'] = 'GROUP_SELECTION'
     context.user_data['tashmi_page'] = 0
     await update.message.reply_text(
@@ -90,15 +100,16 @@ async def start_tashmi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=build_group_keyboard(0)
     )
+    logger.info(f"✅ تم عرض أزرار المجموعات للمستخدم {user.id}")
 
 async def tashmi_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة الضغط على أزرار المجموعات أو التنقل"""
     query = update.callback_query
     await query.answer()
     data = query.data
+    logger.info(f"🔄 callback من {update.effective_user.id}: {data}")
 
     if data.startswith("group_"):
-        # اختيار مجموعة
         group_number = data.split("_")[1]
         context.user_data['group_number'] = group_number
         context.user_data['tashmi_state'] = 'VOICE_RECORDING'
@@ -108,6 +119,7 @@ async def tashmi_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             parse_mode="Markdown",
             reply_markup=None
         )
+        logger.info(f"✅ تم اختيار المجموعة {group_number} للمستخدم {update.effective_user.id}")
         return
 
     elif data.startswith("page_"):
@@ -121,7 +133,6 @@ async def tashmi_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         return
 
     elif data == "back_to_main":
-        # الرجوع للقائمة الرئيسية
         await query.edit_message_text(
             "🔙 تم العودة إلى القائمة الرئيسية.",
             reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD.keyboard, resize_keyboard=True)
@@ -131,8 +142,10 @@ async def tashmi_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
 async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """استقبال الملف الصوتي بعد اختيار المجموعة"""
-    # التأكد من أن المستخدم في حالة استقبال صوت
+    logger.info(f"🎤 استلام ملف صوتي من {update.effective_user.id}")
+    
     if context.user_data.get('tashmi_state') != 'VOICE_RECORDING':
+        logger.warning(f"⚠️ تجاهل: المستخدم {update.effective_user.id} ليس في حالة VOICE_RECORDING")
         return
 
     user = update.effective_user
@@ -149,14 +162,17 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_id = audio.file_id
         duration = audio.duration or 0
         file_name = audio.file_name or "تسجيل صوتي"
+        logger.info(f"📁 استلام AUDIO: duration={duration}")
     elif voice:
         file_id = voice.file_id
         duration = voice.duration or 0
         file_name = "تسجيل صوتي (تليجرام)"
+        logger.info(f"🎙️ استلام VOICE: duration={duration}")
     elif document and document.mime_type and document.mime_type.startswith('audio/'):
         file_id = document.file_id
         duration = 0
         file_name = document.file_name or "ملف صوتي"
+        logger.info(f"📄 استلام DOCUMENT: {file_name}")
     else:
         await update.message.reply_text("❌ الرجاء إرسال ملف صوتي (MP3, M4A, OGG) أو تسجيل صوتي.")
         return
@@ -167,6 +183,10 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         async def save_audio():
+            logger.info(f"💾 محاولة حفظ التسميع في قاعدة البيانات...")
+            if not DATABASE_URL:
+                raise Exception("DATABASE_URL غير معرف")
+            
             conn = await asyncpg.connect(DATABASE_URL)
             try:
                 await conn.execute("""
@@ -193,9 +213,16 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     file_id,
                     duration
                 )
+                logger.info(f"✅ تم حفظ التسميع للمستخدم {user.id} في المجموعة {group_number}")
+            except Exception as e:
+                logger.error(f"❌ خطأ في save_audio: {e}")
+                logger.error(traceback.format_exc())
+                raise
             finally:
                 await conn.close()
+                logger.info("🔒 تم إغلاق اتصال قاعدة البيانات")
 
+        # تشغيل save_audio
         run_async(save_audio())
 
         await update.message.reply_text(
@@ -214,10 +241,14 @@ async def receive_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
+                logger.info(f"✅ تم إشعار المشرف {admin_id}")
             except Exception as e:
-                logging.error(f"فشل إشعار المشرف: {e}")
+                logger.error(f"فشل إشعار المشرف {admin_id}: {e}")
 
         context.user_data.clear()
+        logger.info(f"✅ اكتملت عملية التسميع للمستخدم {user.id}")
+
     except Exception as e:
-        logging.error(f"خطأ في حفظ التسميع: {e}")
-        await update.message.reply_text("❌ حدث خطأ تقني، حاول مرة أخرى لاحقاً.")
+        logger.error(f"💥 خطأ في receive_audio_file: {e}")
+        logger.error(traceback.format_exc())
+        await update.message.reply_text(f"❌ حدث خطأ تقني: {str(e)[:100]}")
