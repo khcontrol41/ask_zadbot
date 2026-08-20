@@ -213,7 +213,7 @@ def get_tashmi_handler():
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("tashmi", start_tashmi),
-            MessageHandler(filters.Regex("^🎙️ تسميع جديد$"), start_tashmi)  # من الزر المخصص
+            # تم إزالة MessageHandler(filters.Regex("^🎙️ تسميع جديد$"), start_tashmi)
         ],
         states={
             GROUP_SELECTION: [CallbackQueryHandler(group_selection_callback)],
