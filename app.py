@@ -521,11 +521,9 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     username = update.effective_user.username
     logger.info(f"📌 زر مضغوط: {text} من المستخدم {update.effective_user.id}")
 
-    # ✅ لا نمسح السياق هنا، بل نترك كل زر يتعامل مع حالته
+    # ✅ لا نتعامل مع زر "تسميع جديد" هنا، بل نتركه لـ ConversationHandler
     if text == "🎙️ تسميع جديد":
-        # سيتم التعامل معه بواسطة ConversationHandler عبر entry_points
-        # لا نفعل شيئاً هنا، نتركه يمر إلى المعالج
-        return
+        return  # نترك المعالج الآخر يلتقطها
 
     if text == "📩 سؤال جديد":
         # مسح أي بيانات سابقة متعلقة بالتسميع
@@ -559,13 +557,12 @@ async def handle_main_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ✅ التأكد من أن المستخدم في حالة انتظار سؤال، وليس في حالة تسميع
     if not context.user_data.get('waiting_for_question'):
-        # إذا لم يكن في حالة انتظار سؤال، نتجاهل النص (لأنه قد يكون جزءاً من التسميع)
         return
 
     user_id = update.effective_user.id
     username = update.effective_user.username
     question_text = update.message.text
-    logger.info(f"📩 استلام نص من {user_id}: '{question_text[:50]}...'")
+    logger.info(f"📩 استلام سؤال من {user_id}: '{question_text[:50]}...'")
 
     if not username:
         await update.message.reply_text(
@@ -590,7 +587,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "INSERT INTO questions (user_id, username, question) VALUES ($1, $2, $3)",
                 user_id, username, question_text
             )
-            logger.info(f"✅ تم حفظ سؤال المستخدم {user_id} في قاعدة البيانات")
+            logger.info(f"✅ تم حفظ سؤال المستخدم {user_id}")
         finally:
             await conn.close()
 
@@ -612,7 +609,7 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"فشل إشعار المشرف {admin_id}: {e}")
 
     except Exception as e:
-        logger.error(f"💥 خطأ غير متوقع في handle_question: {e}")
+        logger.error(f"💥 خطأ في handle_question: {e}")
         await update.message.reply_text(
             "❌ حدث خطأ تقني، حاول مرة أخرى لاحقاً.",
             reply_markup=MAIN_KEYBOARD
@@ -640,10 +637,20 @@ def run_bot():
     asyncio.set_event_loop(loop)
     bot_app = Application.builder().token(TOKEN).build()
 
+    # 1. معالج التسميع (يأخذ الأولوية لزر "تسميع جديد")
     bot_app.add_handler(tashmi_bot.get_tashmi_handler())
-    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|🎙️ تسميع جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
+
+    # 2. معالج الأزرار الرئيسية (للاستفسارات والأسئلة الشائعة)
+    #    لا يشمل زر "تسميع جديد" لأنه تم التعامل معه أعلاه
+    bot_app.add_handler(MessageHandler(filters.Regex("^(📩 سؤال جديد|📚 الأسئلة الشائعة)$"), handle_main_buttons))
+
+    # 3. معالج النصوص العامة (الاستفسارات) مع شرط waiting_for_question
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
+
+    # 4. معالج الوسائط غير النصية (نتجاهلها)
     bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
+
+    # 5. الأوامر
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("stats", stats_command))
     bot_app.add_handler(CommandHandler("admin", admin_panel))
