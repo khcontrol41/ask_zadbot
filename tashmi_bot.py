@@ -1,12 +1,45 @@
-# tashmi_bot.py (نسخة معاد كتابتها بالكامل)
+# tashmi_bot.py - نسخة مستقلة تماماً (لا تستورد من app)
 import logging
+import os
+import asyncio
 import asyncpg
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-from app import TOKEN, DATABASE_URL, ADMIN_IDS, get_admin_panel_keyboard, run_async, MAIN_KEYBOARD
+# تعريفات محلية (لا تستورد من app)
+TOKEN = os.environ.get("BOT_TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# المجموعات المتاحة
+# قائمة المشرفين (ضع رقمك هنا)
+ADMIN_IDS = [5387087412]
+
+# لوحة المفاتيح الرئيسية (نسخة محلية)
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [InlineKeyboardButton("📩 سؤال جديد"), InlineKeyboardButton("🎙️ تسميع جديد")],
+        [InlineKeyboardButton("📚 الأسئلة الشائعة")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
+
+def get_admin_panel_keyboard():
+    """لوحة المشرفين (نسخة محلية)"""
+    mini_app_url = "https://khcontrol41.github.io/ask_zadadmin/"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 فتح لوحة المشرفين", web_app={"url": mini_app_url})]
+    ])
+
+def run_async(coro):
+    """تشغيل دالة غير متزامنة في حلقة جديدة (نسخة محلية)"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+# المجموعات
 GROUPS = ['1', '2', '3', '4', '5', '6']
 GROUPS_PER_PAGE = 4
 
